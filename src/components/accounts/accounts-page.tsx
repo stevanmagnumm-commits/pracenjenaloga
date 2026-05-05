@@ -81,6 +81,7 @@ export function AccountsPage() {
   const [groups, setGroups] = useState<GroupWithCount[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string>("");
   const [showOdlicni, setShowOdlicni] = useState(false);
+  const [showBanned, setShowBanned] = useState(false);
   const [showGroupDialog, setShowGroupDialog] = useState(false);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
@@ -341,10 +342,12 @@ export function AccountsPage() {
 
   const isRefreshing = refreshProgress?.running ?? false;
 
-  // Filter for "Odlicni" - accounts with avgLast36Views >= 800
+  // Filter for special categories
   const displayedAccounts = showOdlicni
     ? accounts.filter((a) => a.avgLast36Views >= 800)
-    : accounts;
+    : showBanned
+      ? accounts.filter((a) => a.status === "possibly_banned")
+      : accounts;
 
   const qualifiedAccounts = displayedAccounts.filter((a) => a.avgVideoViews >= 50);
   const groupAvgViews =
@@ -362,7 +365,7 @@ export function AccountsPage() {
         <div>
           <h1 className="text-2xl font-bold">All Accounts</h1>
           <p className="text-sm text-muted-foreground">
-            {displayedAccounts.length} accounts{showOdlicni ? " (Odlicni)" : selectedGroupId ? " in group" : " tracked"}
+            {displayedAccounts.length} accounts{showOdlicni ? " (Odlicni)" : showBanned ? " (Banned)" : selectedGroupId ? " in group" : " tracked"}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -398,9 +401,9 @@ export function AccountsPage() {
       {/* Group filter tabs */}
       <div className="flex flex-wrap gap-1.5">
         <button
-          onClick={() => { setSelectedGroupId(""); setShowOdlicni(false); }}
+          onClick={() => { setSelectedGroupId(""); setShowOdlicni(false); setShowBanned(false); }}
           className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-            !selectedGroupId && !showOdlicni
+            !selectedGroupId && !showOdlicni && !showBanned
               ? "bg-primary/10 text-primary"
               : "bg-muted text-muted-foreground hover:text-foreground"
           }`}
@@ -408,7 +411,7 @@ export function AccountsPage() {
           All
         </button>
         <button
-          onClick={() => { setSelectedGroupId(""); setShowOdlicni(true); }}
+          onClick={() => { setSelectedGroupId(""); setShowOdlicni(true); setShowBanned(false); }}
           className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
             showOdlicni
               ? "bg-green-500/20 text-green-400"
@@ -417,10 +420,20 @@ export function AccountsPage() {
         >
           ⭐ Odlicni ({accounts.filter((a) => a.avgLast36Views >= 800).length})
         </button>
+        <button
+          onClick={() => { setSelectedGroupId(""); setShowOdlicni(false); setShowBanned(true); }}
+          className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+            showBanned
+              ? "bg-red-500/20 text-red-400"
+              : "bg-muted text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          🚫 Banned ({accounts.filter((a) => a.status === "possibly_banned").length})
+        </button>
         {groups.map((g) => (
           <button
             key={g.id}
-            onClick={() => { setSelectedGroupId(g.id); setShowOdlicni(false); }}
+            onClick={() => { setSelectedGroupId(g.id); setShowOdlicni(false); setShowBanned(false); }}
             className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
               selectedGroupId === g.id
                 ? "bg-primary/10 text-primary"
@@ -535,7 +548,7 @@ export function AccountsPage() {
               {displayedAccounts.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">
-                    {showOdlicni ? "No accounts with 800+ avg views" : selectedGroupId ? "No accounts in this group" : "No accounts tracked yet"}
+                    {showOdlicni ? "No accounts with 800+ avg views" : showBanned ? "No banned accounts" : selectedGroupId ? "No accounts in this group" : "No accounts tracked yet"}
                   </TableCell>
                 </TableRow>
               ) : (

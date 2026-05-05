@@ -76,6 +76,7 @@ export function AccountsPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [lastClickedId, setLastClickedId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   const [groups, setGroups] = useState<GroupWithCount[]>([]);
@@ -313,13 +314,33 @@ export function AccountsPage() {
     );
   }
 
-  function toggleSelect(id: string) {
+  function toggleSelect(id: string, shiftKey: boolean) {
+    if (shiftKey && lastClickedId && lastClickedId !== id) {
+      // Shift+click: select range
+      const ids = displayedAccounts.map((a) => a.id);
+      const lastIdx = ids.indexOf(lastClickedId);
+      const currentIdx = ids.indexOf(id);
+      if (lastIdx !== -1 && currentIdx !== -1) {
+        const start = Math.min(lastIdx, currentIdx);
+        const end = Math.max(lastIdx, currentIdx);
+        const rangeIds = ids.slice(start, end + 1);
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          rangeIds.forEach((rid) => next.add(rid));
+          return next;
+        });
+        return;
+      }
+    }
+    
+    // Normal click: toggle single
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
+    setLastClickedId(id);
   }
 
   function toggleSelectAll() {
@@ -589,7 +610,7 @@ export function AccountsPage() {
                         <input
                           type="checkbox"
                           checked={selectedIds.has(account.id)}
-                          onChange={() => toggleSelect(account.id)}
+                          onChange={(e) => toggleSelect(account.id, e.nativeEvent.shiftKey)}
                           className="size-4 rounded border-border accent-primary cursor-pointer"
                         />
                       </label>

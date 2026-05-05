@@ -94,12 +94,8 @@ export function AccountsPage() {
   const [manageGroupId, setManageGroupId] = useState("");
   const [groupMembers, setGroupMembers] = useState<Array<{ id: string; accountId: string; username: string; fullName: string | null }>>([]);
   const [showCopyDialog, setShowCopyDialog] = useState(false);
-  const [copyFilters, setCopyFilters] = useState<{ odlicni: boolean; banned: boolean; noGroup: boolean; groupIds: Set<string> }>({
-    odlicni: false,
-    banned: false,
-    noGroup: true,
-    groupIds: new Set(),
-  });
+  const [copyStatusFilter, setCopyStatusFilter] = useState<"all" | "odlicni" | "banned">("all");
+  const [copyGroupFilter, setCopyGroupFilter] = useState<"all" | "noGroup" | string>("all");
 
   const fetchGroups = useCallback(async () => {
     try {
@@ -368,15 +364,24 @@ export function AccountsPage() {
     setTimeout(() => setCopied(false), 2000);
   }
 
-  function handleCopyFiltered() {
-    const filtered = accounts.filter((a) => {
-      // Check if account matches any selected filter
-      if (copyFilters.odlicni && a.avgLast36Views >= 800) return true;
-      if (copyFilters.banned && a.status === "possibly_banned") return true;
-      if (copyFilters.noGroup && a.groups.length === 0 && a.status !== "possibly_banned") return true;
-      if (a.groups.some((g) => copyFilters.groupIds.has(g.id))) return true;
-      return false;
+  function getFilteredAccountsForCopy() {
+    return accounts.filter((a) => {
+      // Status filter (AND logic)
+      if (copyStatusFilter === "odlicni" && a.avgLast36Views < 800) return false;
+      if (copyStatusFilter === "banned" && a.status !== "possibly_banned") return false;
+      
+      // Group filter (AND logic)
+      if (copyGroupFilter === "noGroup" && a.groups.length > 0) return false;
+      if (copyGroupFilter !== "all" && copyGroupFilter !== "noGroup") {
+        if (!a.groups.some((g) => g.id === copyGroupFilter)) return false;
+      }
+      
+      return true;
     });
+  }
+
+  function handleCopyFiltered() {
+    const filtered = getFilteredAccountsForCopy();
     const usernames = filtered.map((a) => a.username).join("\n");
     navigator.clipboard.writeText(usernames);
     setCopied(true);
@@ -384,23 +389,8 @@ export function AccountsPage() {
     setTimeout(() => setCopied(false), 2000);
   }
 
-  function toggleCopyGroup(groupId: string) {
-    setCopyFilters((prev) => {
-      const next = new Set(prev.groupIds);
-      if (next.has(groupId)) next.delete(groupId);
-      else next.add(groupId);
-      return { ...prev, groupIds: next };
-    });
-  }
-
   function getCopyPreviewCount() {
-    return accounts.filter((a) => {
-      if (copyFilters.odlicni && a.avgLast36Views >= 800) return true;
-      if (copyFilters.banned && a.status === "possibly_banned") return true;
-      if (copyFilters.noGroup && a.groups.length === 0 && a.status !== "possibly_banned") return true;
-      if (a.groups.some((g) => copyFilters.groupIds.has(g.id))) return true;
-      return false;
-    }).length;
+    return getFilteredAccountsForCopy().length;
   }
 
   async function handleBulkDelete() {
@@ -921,59 +911,85 @@ export function AccountsPage() {
                 </button>
               </div>
               <div className="p-5 space-y-4">
-                <p className="text-sm text-muted-foreground">Select which accounts to copy:</p>
-                
-                <div className="space-y-2">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={copyFilters.noGroup}
-                      onChange={(e) => setCopyFilters((prev) => ({ ...prev, noGroup: e.target.checked }))}
-                      className="size-4 rounded border-border accent-primary"
-                    />
-                    <span className="text-sm">No group ({accounts.filter((a) => a.groups.length === 0 && a.status !== "possibly_banned").length})</span>
-                  </label>
-                  
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={copyFilters.odlicni}
-                      onChange={(e) => setCopyFilters((prev) => ({ ...prev, odlicni: e.target.checked }))}
-                      className="size-4 rounded border-border accent-primary"
-                    />
-                    <span className="text-sm text-green-400">⭐ Odlicni ({accounts.filter((a) => a.avgLast36Views >= 800).length})</span>
-                  </label>
-                  
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={copyFilters.banned}
-                      onChange={(e) => setCopyFilters((prev) => ({ ...prev, banned: e.target.checked }))}
-                      className="size-4 rounded border-border accent-primary"
-                    />
-                    <span className="text-sm text-red-400">🚫 Banned ({accounts.filter((a) => a.status === "possibly_banned").length})</span>
-                  </label>
-                  
-                  {groups.length > 0 && (
-                    <div className="border-t border-border pt-2 mt-2 space-y-2">
-                      {groups.map((g) => (
-                        <label key={g.id} className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={copyFilters.groupIds.has(g.id)}
-                            onChange={() => toggleCopyGroup(g.id)}
-                            className="size-4 rounded border-border accent-primary"
-                          />
-                          <span className="text-sm">{g.name} ({g.memberCount})</span>
-                        </label>
-                      ))}
-                    </div>
-                  )}
+                {/* Status Filter */}
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-2">Status</p>
+                  <div className="space-y-1.5">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="copyStatus"
+                        checked={copyStatusFilter === "all"}
+                        onChange={() => setCopyStatusFilter("all")}
+                        className="size-4 accent-primary"
+                      />
+                      <span className="text-sm">All statuses</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="copyStatus"
+                        checked={copyStatusFilter === "odlicni"}
+                        onChange={() => setCopyStatusFilter("odlicni")}
+                        className="size-4 accent-primary"
+                      />
+                      <span className="text-sm text-green-400">⭐ Odlicni only</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="copyStatus"
+                        checked={copyStatusFilter === "banned"}
+                        onChange={() => setCopyStatusFilter("banned")}
+                        className="size-4 accent-primary"
+                      />
+                      <span className="text-sm text-red-400">🚫 Banned only</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Group Filter */}
+                <div className="border-t border-border pt-4">
+                  <p className="text-xs font-medium text-muted-foreground mb-2">Group</p>
+                  <div className="space-y-1.5">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="copyGroup"
+                        checked={copyGroupFilter === "all"}
+                        onChange={() => setCopyGroupFilter("all")}
+                        className="size-4 accent-primary"
+                      />
+                      <span className="text-sm">All groups</span>
+                    </label>
+                    {groups.map((g) => (
+                      <label key={g.id} className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="copyGroup"
+                          checked={copyGroupFilter === g.id}
+                          onChange={() => setCopyGroupFilter(g.id)}
+                          className="size-4 accent-primary"
+                        />
+                        <span className="text-sm">{g.name}</span>
+                      </label>
+                    ))}
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="copyGroup"
+                        checked={copyGroupFilter === "noGroup"}
+                        onChange={() => setCopyGroupFilter("noGroup")}
+                        className="size-4 accent-primary"
+                      />
+                      <span className="text-sm text-muted-foreground">No group</span>
+                    </label>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between pt-2 border-t border-border">
                   <span className="text-sm text-muted-foreground">
-                    {getCopyPreviewCount()} accounts selected
+                    {getCopyPreviewCount()} accounts
                   </span>
                   <Button size="sm" onClick={handleCopyFiltered} disabled={getCopyPreviewCount() === 0}>
                     {copied ? <Check className="mr-1.5 size-4 text-green-500" /> : <Copy className="mr-1.5 size-4" />}

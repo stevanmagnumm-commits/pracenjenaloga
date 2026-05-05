@@ -80,6 +80,7 @@ export function AccountsPage() {
 
   const [groups, setGroups] = useState<GroupWithCount[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string>("");
+  const [showOdlicni, setShowOdlicni] = useState(false);
   const [showGroupDialog, setShowGroupDialog] = useState(false);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
@@ -321,15 +322,15 @@ export function AccountsPage() {
   }
 
   function toggleSelectAll() {
-    if (selectedIds.size === accounts.length) {
+    if (selectedIds.size === displayedAccounts.length) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(accounts.map((a) => a.id)));
+      setSelectedIds(new Set(displayedAccounts.map((a) => a.id)));
     }
   }
 
   function handleCopyUsernames() {
-    const usernames = accounts
+    const usernames = displayedAccounts
       .filter((a) => selectedIds.has(a.id))
       .map((a) => a.username)
       .join("\n");
@@ -340,7 +341,12 @@ export function AccountsPage() {
 
   const isRefreshing = refreshProgress?.running ?? false;
 
-  const qualifiedAccounts = accounts.filter((a) => a.avgVideoViews >= 50);
+  // Filter for "Odlicni" - accounts with avgLast36Views >= 800
+  const displayedAccounts = showOdlicni
+    ? accounts.filter((a) => a.avgLast36Views >= 800)
+    : accounts;
+
+  const qualifiedAccounts = displayedAccounts.filter((a) => a.avgVideoViews >= 50);
   const groupAvgViews =
     qualifiedAccounts.length > 0
       ? Math.round(
@@ -356,7 +362,7 @@ export function AccountsPage() {
         <div>
           <h1 className="text-2xl font-bold">All Accounts</h1>
           <p className="text-sm text-muted-foreground">
-            {accounts.length} accounts{selectedGroupId ? " in group" : " tracked"}
+            {displayedAccounts.length} accounts{showOdlicni ? " (Odlicni)" : selectedGroupId ? " in group" : " tracked"}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -390,36 +396,44 @@ export function AccountsPage() {
       </div>
 
       {/* Group filter tabs */}
-      {groups.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap gap-1.5">
+        <button
+          onClick={() => { setSelectedGroupId(""); setShowOdlicni(false); }}
+          className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+            !selectedGroupId && !showOdlicni
+              ? "bg-primary/10 text-primary"
+              : "bg-muted text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          All
+        </button>
+        <button
+          onClick={() => { setSelectedGroupId(""); setShowOdlicni(true); }}
+          className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+            showOdlicni
+              ? "bg-green-500/20 text-green-400"
+              : "bg-muted text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          ⭐ Odlicni ({accounts.filter((a) => a.avgLast36Views >= 800).length})
+        </button>
+        {groups.map((g) => (
           <button
-            onClick={() => setSelectedGroupId("")}
+            key={g.id}
+            onClick={() => { setSelectedGroupId(g.id); setShowOdlicni(false); }}
             className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-              !selectedGroupId
+              selectedGroupId === g.id
                 ? "bg-primary/10 text-primary"
                 : "bg-muted text-muted-foreground hover:text-foreground"
             }`}
           >
-            All ({groups.reduce((s, g) => s + g.memberCount, 0) > 0 ? "all" : "0"})
+            {g.name} ({g.memberCount})
           </button>
-          {groups.map((g) => (
-            <button
-              key={g.id}
-              onClick={() => setSelectedGroupId(g.id)}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                selectedGroupId === g.id
-                  ? "bg-primary/10 text-primary"
-                  : "bg-muted text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {g.name} ({g.memberCount})
-            </button>
-          ))}
-        </div>
-      )}
+        ))}
+      </div>
 
       {/* Category average views */}
-      {accounts.length > 0 && (
+      {displayedAccounts.length > 0 && (
         <div className="rounded-lg border border-border bg-card p-4 flex items-center gap-6">
           <div>
             <p className="text-xs text-muted-foreground">Avg Views per Video</p>
@@ -431,7 +445,7 @@ export function AccountsPage() {
             <p className="text-2xl font-bold">
               {qualifiedAccounts.length}
               <span className="text-sm font-normal text-muted-foreground ml-1">
-                / {accounts.length}
+                / {displayedAccounts.length}
               </span>
             </p>
           </div>
@@ -488,7 +502,7 @@ export function AccountsPage() {
       )}
 
       {/* Table */}
-      {loading && accounts.length === 0 ? (
+      {loading && displayedAccounts.length === 0 ? (
         <div className="flex items-center justify-center py-20">
           <div className="size-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
         </div>
@@ -501,7 +515,7 @@ export function AccountsPage() {
                   <label className="flex items-center justify-center cursor-pointer py-1 px-1">
                     <input
                       type="checkbox"
-                      checked={accounts.length > 0 && selectedIds.size === accounts.length}
+                      checked={displayedAccounts.length > 0 && selectedIds.size === displayedAccounts.length}
                       onChange={toggleSelectAll}
                       className="size-4 rounded border-border accent-primary cursor-pointer"
                     />
@@ -518,14 +532,14 @@ export function AccountsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {accounts.length === 0 ? (
+              {displayedAccounts.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">
-                    {selectedGroupId ? "No accounts in this group" : "No accounts tracked yet"}
+                    {showOdlicni ? "No accounts with 800+ avg views" : selectedGroupId ? "No accounts in this group" : "No accounts tracked yet"}
                   </TableCell>
                 </TableRow>
               ) : (
-                accounts.map((account) => (
+                displayedAccounts.map((account) => (
                   <TableRow
                     key={account.id}
                     className={`cursor-pointer hover:bg-accent/50 ${selectedIds.has(account.id) ? "bg-primary/5" : ""}`}

@@ -736,7 +736,7 @@ export function AccountsPage() {
                         <input
                           type="checkbox"
                           checked={selectedIds.has(account.id)}
-                          onChange={(e) => toggleSelect(account.id, e.nativeEvent.shiftKey)}
+                          onChange={(e) => toggleSelect(account.id, (e.nativeEvent as KeyboardEvent).shiftKey)}
                           className="size-4 rounded border-border accent-primary cursor-pointer"
                         />
                       </label>

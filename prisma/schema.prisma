@@ -1,0 +1,177 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model AccountGroup {
+  id        String                @id @default(cuid())
+  name      String                @unique
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+
+  members   AccountGroupMember[]
+}
+
+model AccountGroupMember {
+  id        String         @id @default(cuid())
+  groupId   String
+  accountId String
+
+  group     AccountGroup   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  account   TrackedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, accountId])
+  @@index([accountId])
+}
+
+model TrackedAccount {
+  id              String            @id @default(cuid())
+  igUserId        String?
+  username        String            @unique
+  fullName        String?
+  bio             String?
+  profilePicUrl   String?
+  isVerified      Boolean           @default(false)
+  status          String            @default("active") // active, possibly_banned
+  refreshInterval String            @default("EIGHT_HOURS") // DAILY, TWELVE_HOURS, EIGHT_HOURS, ONE_HOUR
+  priority        Int               @default(2) // 1=high, 2=medium, 3=low
+  lastRefreshedAt DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  snapshots       AccountSnapshot[]
+  media           Media[]
+  groups          AccountGroupMember[]
+}
+
+model AccountSnapshot {
+  id             String         @id @default(cuid())
+  accountId      String
+  followerCount  Int            @default(0)
+  followingCount Int            @default(0)
+  mediaCount     Int            @default(0)
+  snapshotAt     DateTime       @default(now())
+
+  account        TrackedAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, snapshotAt])
+}
+
+model Media {
+  id           String          @id @default(cuid())
+  accountId    String
+  igMediaId    String          @unique
+  mediaType    String          @default("REEL") // REEL, IMAGE, CAROUSEL, VIDEO
+  shortcode    String?
+  caption      String?
+  thumbnailUrl String?
+  videoUrl     String?
+  duration     Float?          // seconds
+  publishedAt  DateTime?
+  createdAt    DateTime        @default(now())
+
+  account      TrackedAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  snapshots    MediaSnapshot[]
+
+  @@index([accountId, publishedAt])
+}
+
+model MediaSnapshot {
+  id             String   @id @default(cuid())
+  mediaId        String
+  viewCount      Int      @default(0)
+  likeCount      Int      @default(0)
+  commentCount   Int      @default(0)
+  engagementRate Float    @default(0) // (likes+comments)/followerCount at time of snapshot
+  snapshotAt     DateTime @default(now())
+
+  media          Media    @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@index([mediaId, snapshotAt])
+}
+
+model ApiUsage {
+  id        String   @id @default(cuid())
+  month     String   // format: "2026-03"
+  callCount Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@unique([month])
+}
+
+model SnapchatGroup {
+  id        String                  @id @default(cuid())
+  name      String                  @unique
+  createdAt DateTime                @default(now())
+  updatedAt DateTime                @updatedAt
+
+  members   SnapchatGroupMember[]
+}
+
+model SnapchatGroupMember {
+  id        String          @id @default(cuid())
+  groupId   String
+  accountId String
+
+  group     SnapchatGroup   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  account   SnapchatAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, accountId])
+  @@index([accountId])
+}
+
+model SnapchatAccount {
+  id            String                @id @default(cuid())
+  username      String                @unique
+  displayName   String?
+  status        String                @default("unknown") // alive, banned, unknown
+  lastCheckedAt DateTime?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  groups        SnapchatGroupMember[]
+  statusLogs    SnapchatStatusLog[]
+}
+
+model SnapchatStatusLog {
+  id        String          @id @default(cuid())
+  accountId String
+  status    String          // alive, banned
+  checkedAt DateTime        @default(now())
+
+  account   SnapchatAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, checkedAt])
+}
+
+model ThreadsAccount {
+  id              String                   @id @default(cuid())
+  threadsPk       String?
+  username        String                   @unique
+  fullName        String?
+  bio             String?
+  isVerified      Boolean                  @default(false)
+  followerCount   Int                      @default(0)
+  refreshInterval String                   @default("EIGHT_HOURS")
+  priority        Int                      @default(2)
+  lastRefreshedAt DateTime?
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+
+  snapshots       ThreadsFollowerSnapshot[]
+}
+
+model ThreadsFollowerSnapshot {
+  id             String         @id @default(cuid())
+  accountId      String
+  followerCount  Int            @default(0)
+  snapshotAt     DateTime       @default(now())
+
+  account        ThreadsAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, snapshotAt])
+}

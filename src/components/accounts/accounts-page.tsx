@@ -83,6 +83,7 @@ export function AccountsPage() {
   const [selectedGroupId, setSelectedGroupId] = useState<string>("");
   const [showOdlicni, setShowOdlicni] = useState(false);
   const [showBanned, setShowBanned] = useState(false);
+  const [subGroupFilters, setSubGroupFilters] = useState<Set<string>>(new Set(["all"])); // "all", "noGroup", or group IDs
   const [showGroupDialog, setShowGroupDialog] = useState(false);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
@@ -97,6 +98,9 @@ export function AccountsPage() {
   const [copyStatusFilter, setCopyStatusFilter] = useState<"all" | "odlicni" | "banned">("all");
   const [copyGroupFilter, setCopyGroupFilter] = useState<"all" | "noGroup" | string>("all");
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: "single" | "bulk"; id?: string; username?: string; count?: number } | null>(null);
+  const [showSelectDialog, setShowSelectDialog] = useState(false);
+  const [selectStatusFilter, setSelectStatusFilter] = useState<"all" | "odlicni" | "banned">("all");
+  const [selectGroupFilter, setSelectGroupFilter] = useState<"all" | "noGroup" | string>("all");
 
   const fetchGroups = useCallback(async () => {
     try {
@@ -426,11 +430,27 @@ export function AccountsPage() {
   const isRefreshing = refreshProgress?.running ?? false;
 
   // Filter for special categories
-  const displayedAccounts = showOdlicni
-    ? accounts.filter((a) => a.avgLast36Views >= 800)
-    : showBanned
-      ? accounts.filter((a) => a.status === "possibly_banned")
-      : accounts;
+  const displayedAccounts = (() => {
+    let filtered = accounts;
+    
+    // First apply main category filter
+    if (showOdlicni) {
+      filtered = filtered.filter((a) => a.avgLast36Views >= 800);
+    } else if (showBanned) {
+      filtered = filtered.filter((a) => a.status === "possibly_banned");
+    }
+    
+    // Then apply sub-group filter if Odlicni or Banned is active and not "all"
+    if ((showOdlicni || showBanned) && !subGroupFilters.has("all")) {
+      filtered = filtered.filter((a) => {
+        if (subGroupFilters.has("noGroup") && a.groups.length === 0) return true;
+        if (a.groups.some((g) => subGroupFilters.has(g.id))) return true;
+        return false;
+      });
+    }
+    
+    return filtered;
+  })();
 
   const qualifiedAccounts = displayedAccounts.filter((a) => a.avgVideoViews >= 50);
   const groupAvgViews =
@@ -504,7 +524,7 @@ export function AccountsPage() {
           All
         </button>
         <button
-          onClick={() => { setSelectedGroupId(""); setShowOdlicni(true); setShowBanned(false); }}
+          onClick={() => { setSelectedGroupId(""); setShowOdlicni(true); setShowBanned(false); setSubGroupFilters(new Set(["all"])); }}
           className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
             showOdlicni
               ? "bg-green-500/20 text-green-400"
@@ -514,7 +534,7 @@ export function AccountsPage() {
           ⭐ Odlicni ({accounts.filter((a) => a.avgLast36Views >= 800).length})
         </button>
         <button
-          onClick={() => { setSelectedGroupId(""); setShowOdlicni(false); setShowBanned(true); }}
+          onClick={() => { setSelectedGroupId(""); setShowOdlicni(false); setShowBanned(true); setSubGroupFilters(new Set(["all"])); }}
           className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
             showBanned
               ? "bg-red-500/20 text-red-400"
@@ -537,6 +557,66 @@ export function AccountsPage() {
           </button>
         ))}
       </div>
+
+      {/* Sub-group filters for Odlicni/Banned */}
+      {(showOdlicni || showBanned) && (
+        <div className="flex flex-wrap items-center gap-3 pl-1">
+          <span className="text-xs text-muted-foreground">Filter by group:</span>
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={subGroupFilters.has("all")}
+              onChange={(e) => {
+                if (e.target.checked) {
+                  setSubGroupFilters(new Set(["all"]));
+                } else {
+                  setSubGroupFilters(new Set());
+                }
+              }}
+              className="size-3.5 rounded border-border accent-primary"
+            />
+            <span className="text-xs">All</span>
+          </label>
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={subGroupFilters.has("noGroup")}
+              onChange={(e) => {
+                setSubGroupFilters((prev) => {
+                  const next = new Set(prev);
+                  next.delete("all");
+                  if (e.target.checked) next.add("noGroup");
+                  else next.delete("noGroup");
+                  if (next.size === 0) next.add("all");
+                  return next;
+                });
+              }}
+              className="size-3.5 rounded border-border accent-primary"
+            />
+            <span className="text-xs">No group</span>
+          </label>
+          {groups.map((g) => (
+            <label key={g.id} className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={subGroupFilters.has(g.id)}
+                onChange={(e) => {
+                  setSubGroupFilters((prev) => {
+                    const next = new Set(prev);
+                    next.delete("all");
+                    if (e.target.checked) next.add(g.id);
+                    else next.delete(g.id);
+                    if (next.size === 0) next.add("all");
+                    return next;
+                  });
+                }}
+                className="size-3.5 rounded border-border accent-primary"
+              />
+              <span className="text-xs">{g.name}</span>
+            </label>
+          ))}
+        </div>
+      )}
 
       {/* Category average views */}
       {displayedAccounts.length > 0 && (

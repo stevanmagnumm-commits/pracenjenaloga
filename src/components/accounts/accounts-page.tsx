@@ -340,6 +340,26 @@ export function AccountsPage() {
     setTimeout(() => setCopied(false), 2000);
   }
 
+  async function handleBulkDelete() {
+    const count = selectedIds.size;
+    if (!confirm(`Delete ${count} account${count === 1 ? "" : "s"} and all their data? This cannot be undone.`)) return;
+    
+    try {
+      const ids = Array.from(selectedIds);
+      const results = await Promise.all(
+        ids.map((id) => fetch(`/api/accounts?id=${id}`, { method: "DELETE" }))
+      );
+      const deleted = results.filter((r) => r.ok).length;
+      setAccounts((prev) => prev.filter((a) => !selectedIds.has(a.id)));
+      setSelectedIds(new Set());
+      if (deleted < count) {
+        alert(`Deleted ${deleted} of ${count} accounts. Some may have failed.`);
+      }
+    } catch {
+      alert("Error deleting accounts");
+    }
+  }
+
   const isRefreshing = refreshProgress?.running ?? false;
 
   // Filter for special categories
@@ -370,14 +390,20 @@ export function AccountsPage() {
         </div>
         <div className="flex items-center gap-2">
           {selectedIds.size > 0 && (
-            <Button variant="outline" size="sm" onClick={handleCopyUsernames}>
-              {copied ? (
-                <Check className="mr-1.5 size-4 text-green-500" />
-              ) : (
-                <Copy className="mr-1.5 size-4" />
-              )}
-              {copied ? "Copied!" : `Copy ${selectedIds.size} username${selectedIds.size === 1 ? "" : "s"}`}
-            </Button>
+            <>
+              <Button variant="outline" size="sm" onClick={handleCopyUsernames}>
+                {copied ? (
+                  <Check className="mr-1.5 size-4 text-green-500" />
+                ) : (
+                  <Copy className="mr-1.5 size-4" />
+                )}
+                {copied ? "Copied!" : `Copy ${selectedIds.size}`}
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleBulkDelete} className="text-red-500 hover:text-red-400 hover:bg-red-500/10">
+                <Trash2 className="mr-1.5 size-4" />
+                Delete {selectedIds.size}
+              </Button>
+            </>
           )}
           <Button variant="outline" size="sm" onClick={() => setShowGroupDialog(true)}>
             <FolderPlus className="mr-1.5 size-4" />

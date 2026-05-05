@@ -43,6 +43,7 @@ interface AccountStat {
   totalViews: number;
   avgVideoViews: number;
   avgLast36Views: number;
+  lastPosted: string | null;
   lastTracked: string | null;
   createdAt: string;
   groups: GroupInfo[];
@@ -62,7 +63,7 @@ interface GroupWithCount {
   memberCount: number;
 }
 
-type SortField = "totalViews" | "videosTracked" | "avgVideoViews" | "avgLast36Views" | "lastTracked";
+type SortField = "totalViews" | "videosTracked" | "avgVideoViews" | "avgLast36Views" | "lastPosted" | "lastTracked";
 type SortDir = "asc" | "desc";
 
 export function AccountsPage() {
@@ -511,6 +512,7 @@ export function AccountsPage() {
                 <SortableHeader field="totalViews" className="text-right">Total Views</SortableHeader>
                 <SortableHeader field="avgVideoViews" className="text-right">Avg Views</SortableHeader>
                 <SortableHeader field="avgLast36Views" className="text-right">Avg (last 36)</SortableHeader>
+                <SortableHeader field="lastPosted">Last Posted</SortableHeader>
                 <SortableHeader field="lastTracked">Last Tracked</SortableHeader>
                 <TableHead className="w-10" />
               </TableRow>
@@ -518,7 +520,7 @@ export function AccountsPage() {
             <TableBody>
               {accounts.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+                  <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">
                     {selectedGroupId ? "No accounts in this group" : "No accounts tracked yet"}
                   </TableCell>
                 </TableRow>
@@ -588,6 +590,14 @@ export function AccountsPage() {
                     <TableCell className="text-right font-medium">{formatNumber(account.totalViews)}</TableCell>
                     <TableCell className="text-right font-medium">{formatNumber(account.avgVideoViews)}</TableCell>
                     <TableCell className="text-right font-medium">{formatNumber(account.avgLast36Views)}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">
+                      {account.lastPosted
+                        ? new Date(account.lastPosted).toLocaleDateString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                          })
+                        : "—"}
+                    </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
                       {account.lastTracked
                         ? new Date(account.lastTracked).toLocaleDateString("en-US", {

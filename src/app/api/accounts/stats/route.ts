@@ -83,6 +83,9 @@ export async function GET(req: NextRequest) {
       }
       const avgLast36Views = last36Count > 0 ? Math.round(last36Views / last36Count) : 0;
 
+      // Most recent post date from tracked media
+      const lastPosted = sortedByRecency[0]?.publishedAt ?? null;
+
       const latestSnap = account.snapshots[0];
 
       return {
@@ -103,6 +106,7 @@ export async function GET(req: NextRequest) {
         avgVideoViews,
         avgLast36Views,
         postsLastWeek,
+        lastPosted,
         lastTracked: account.lastRefreshedAt,
         createdAt: account.createdAt,
         groups: account.groups.map((g) => ({ id: g.group.id, name: g.group.name })),
@@ -153,6 +157,10 @@ export async function GET(req: NextRequest) {
         case "lastTracked":
           valA = a.lastTracked ? new Date(a.lastTracked).getTime() : 0;
           valB = b.lastTracked ? new Date(b.lastTracked).getTime() : 0;
+          break;
+        case "lastPosted":
+          valA = a.lastPosted ? new Date(a.lastPosted).getTime() : 0;
+          valB = b.lastPosted ? new Date(b.lastPosted).getTime() : 0;
           break;
         default:
           valA = a.totalViews;

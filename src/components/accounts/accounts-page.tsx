@@ -93,6 +93,13 @@ export function AccountsPage() {
   const [showManageGroup, setShowManageGroup] = useState(false);
   const [manageGroupId, setManageGroupId] = useState("");
   const [groupMembers, setGroupMembers] = useState<Array<{ id: string; accountId: string; username: string; fullName: string | null }>>([]);
+  const [showCopyDialog, setShowCopyDialog] = useState(false);
+  const [copyFilters, setCopyFilters] = useState<{ odlicni: boolean; banned: boolean; noGroup: boolean; groupIds: Set<string> }>({
+    odlicni: false,
+    banned: false,
+    noGroup: true,
+    groupIds: new Set(),
+  });
 
   const fetchGroups = useCallback(async () => {
     try {
@@ -361,6 +368,41 @@ export function AccountsPage() {
     setTimeout(() => setCopied(false), 2000);
   }
 
+  function handleCopyFiltered() {
+    const filtered = accounts.filter((a) => {
+      // Check if account matches any selected filter
+      if (copyFilters.odlicni && a.avgLast36Views >= 800) return true;
+      if (copyFilters.banned && a.status === "possibly_banned") return true;
+      if (copyFilters.noGroup && a.groups.length === 0 && a.status !== "possibly_banned") return true;
+      if (a.groups.some((g) => copyFilters.groupIds.has(g.id))) return true;
+      return false;
+    });
+    const usernames = filtered.map((a) => a.username).join("\n");
+    navigator.clipboard.writeText(usernames);
+    setCopied(true);
+    setShowCopyDialog(false);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  function toggleCopyGroup(groupId: string) {
+    setCopyFilters((prev) => {
+      const next = new Set(prev.groupIds);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return { ...prev, groupIds: next };
+    });
+  }
+
+  function getCopyPreviewCount() {
+    return accounts.filter((a) => {
+      if (copyFilters.odlicni && a.avgLast36Views >= 800) return true;
+      if (copyFilters.banned && a.status === "possibly_banned") return true;
+      if (copyFilters.noGroup && a.groups.length === 0 && a.status !== "possibly_banned") return true;
+      if (a.groups.some((g) => copyFilters.groupIds.has(g.id))) return true;
+      return false;
+    }).length;
+  }
+
   async function handleBulkDelete() {
     const count = selectedIds.size;
     if (!confirm(`Delete ${count} account${count === 1 ? "" : "s"} and all their data? This cannot be undone.`)) return;
@@ -426,6 +468,10 @@ export function AccountsPage() {
               </Button>
             </>
           )}
+          <Button variant="outline" size="sm" onClick={() => setShowCopyDialog(true)}>
+            <Copy className="mr-1.5 size-4" />
+            Copy...
+          </Button>
           <Button variant="outline" size="sm" onClick={() => setShowGroupDialog(true)}>
             <FolderPlus className="mr-1.5 size-4" />
             Groups
@@ -856,6 +902,84 @@ export function AccountsPage() {
                     ))}
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Copy Dialog */}
+      {showCopyDialog && (
+        <>
+          <div className="fixed inset-0 z-50 bg-black/60" onClick={() => setShowCopyDialog(false)} />
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-border px-5 py-4">
+                <h2 className="text-lg font-semibold">Copy Usernames</h2>
+                <button onClick={() => setShowCopyDialog(false)} className="text-muted-foreground hover:text-foreground">
+                  <X className="size-5" />
+                </button>
+              </div>
+              <div className="p-5 space-y-4">
+                <p className="text-sm text-muted-foreground">Select which accounts to copy:</p>
+                
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={copyFilters.noGroup}
+                      onChange={(e) => setCopyFilters((prev) => ({ ...prev, noGroup: e.target.checked }))}
+                      className="size-4 rounded border-border accent-primary"
+                    />
+                    <span className="text-sm">No group ({accounts.filter((a) => a.groups.length === 0 && a.status !== "possibly_banned").length})</span>
+                  </label>
+                  
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={copyFilters.odlicni}
+                      onChange={(e) => setCopyFilters((prev) => ({ ...prev, odlicni: e.target.checked }))}
+                      className="size-4 rounded border-border accent-primary"
+                    />
+                    <span className="text-sm text-green-400">⭐ Odlicni ({accounts.filter((a) => a.avgLast36Views >= 800).length})</span>
+                  </label>
+                  
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={copyFilters.banned}
+                      onChange={(e) => setCopyFilters((prev) => ({ ...prev, banned: e.target.checked }))}
+                      className="size-4 rounded border-border accent-primary"
+                    />
+                    <span className="text-sm text-red-400">🚫 Banned ({accounts.filter((a) => a.status === "possibly_banned").length})</span>
+                  </label>
+                  
+                  {groups.length > 0 && (
+                    <div className="border-t border-border pt-2 mt-2 space-y-2">
+                      {groups.map((g) => (
+                        <label key={g.id} className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={copyFilters.groupIds.has(g.id)}
+                            onChange={() => toggleCopyGroup(g.id)}
+                            className="size-4 rounded border-border accent-primary"
+                          />
+                          <span className="text-sm">{g.name} ({g.memberCount})</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between pt-2 border-t border-border">
+                  <span className="text-sm text-muted-foreground">
+                    {getCopyPreviewCount()} accounts selected
+                  </span>
+                  <Button size="sm" onClick={handleCopyFiltered} disabled={getCopyPreviewCount() === 0}>
+                    {copied ? <Check className="mr-1.5 size-4 text-green-500" /> : <Copy className="mr-1.5 size-4" />}
+                    {copied ? "Copied!" : "Copy"}
+                  </Button>
+                </div>
               </div>
             </div>
           </div>

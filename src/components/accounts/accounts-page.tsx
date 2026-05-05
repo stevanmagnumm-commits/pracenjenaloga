@@ -96,6 +96,7 @@ export function AccountsPage() {
   const [showCopyDialog, setShowCopyDialog] = useState(false);
   const [copyStatusFilter, setCopyStatusFilter] = useState<"all" | "odlicni" | "banned">("all");
   const [copyGroupFilter, setCopyGroupFilter] = useState<"all" | "noGroup" | string>("all");
+  const [deleteConfirm, setDeleteConfirm] = useState<{ type: "single" | "bulk"; id?: string; username?: string; count?: number } | null>(null);
 
   const fetchGroups = useCallback(async () => {
     try {
@@ -187,13 +188,18 @@ export function AccountsPage() {
     } catch {}
   }
 
-  async function handleDelete(e: React.MouseEvent, accountId: string, username: string) {
+  function handleDelete(e: React.MouseEvent, accountId: string, username: string) {
     e.stopPropagation();
-    if (!confirm(`Delete @${username} and all its data?`)) return;
+    setDeleteConfirm({ type: "single", id: accountId, username });
+  }
+
+  async function confirmDeleteSingle() {
+    if (!deleteConfirm || deleteConfirm.type !== "single" || !deleteConfirm.id) return;
     try {
-      const res = await fetch(`/api/accounts?id=${accountId}`, { method: "DELETE" });
-      if (res.ok) setAccounts((prev) => prev.filter((a) => a.id !== accountId));
+      const res = await fetch(`/api/accounts?id=${deleteConfirm.id}`, { method: "DELETE" });
+      if (res.ok) setAccounts((prev) => prev.filter((a) => a.id !== deleteConfirm.id));
     } catch {}
+    setDeleteConfirm(null);
   }
 
   async function handleCreateGroup() {
@@ -393,10 +399,13 @@ export function AccountsPage() {
     return getFilteredAccountsForCopy().length;
   }
 
-  async function handleBulkDelete() {
+  function handleBulkDelete() {
+    setDeleteConfirm({ type: "bulk", count: selectedIds.size });
+  }
+
+  async function confirmDeleteBulk() {
+    if (!deleteConfirm || deleteConfirm.type !== "bulk") return;
     const count = selectedIds.size;
-    if (!confirm(`Delete ${count} account${count === 1 ? "" : "s"} and all their data? This cannot be undone.`)) return;
-    
     try {
       const ids = Array.from(selectedIds);
       const results = await Promise.all(
@@ -411,6 +420,7 @@ export function AccountsPage() {
     } catch {
       alert("Error deleting accounts");
     }
+    setDeleteConfirm(null);
   }
 
   const isRefreshing = refreshProgress?.running ?? false;
@@ -892,6 +902,50 @@ export function AccountsPage() {
                     ))}
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Delete Confirmation Dialog */}
+      {deleteConfirm && (
+        <>
+          <div className="fixed inset-0 z-[70] bg-black/60" onClick={() => setDeleteConfirm(null)} />
+          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+            <div className="w-full max-w-sm rounded-xl border border-red-500/30 bg-card shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="p-6 space-y-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex size-10 items-center justify-center rounded-full bg-red-500/10">
+                    <Trash2 className="size-5 text-red-500" />
+                  </div>
+                  <h2 className="text-lg font-semibold">Confirm Delete</h2>
+                </div>
+                
+                <p className="text-sm text-muted-foreground">
+                  {deleteConfirm.type === "single" 
+                    ? <>Are you sure you want to delete <span className="font-medium text-foreground">@{deleteConfirm.username}</span> and all its data?</>
+                    : <>Are you sure you want to delete <span className="font-medium text-foreground">{deleteConfirm.count} accounts</span> and all their data?</>
+                  }
+                </p>
+                <p className="text-xs text-red-400">This action cannot be undone.</p>
+
+                <div className="flex gap-2 pt-2">
+                  <Button 
+                    variant="outline" 
+                    className="flex-1" 
+                    onClick={() => setDeleteConfirm(null)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button 
+                    className="flex-1 bg-red-500 hover:bg-red-600 text-white"
+                    onClick={deleteConfirm.type === "single" ? confirmDeleteSingle : confirmDeleteBulk}
+                  >
+                    <Trash2 className="mr-1.5 size-4" />
+                    Delete
+                  </Button>
+                </div>
               </div>
             </div>
           </div>

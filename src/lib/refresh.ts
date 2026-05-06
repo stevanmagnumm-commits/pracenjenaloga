@@ -191,10 +191,15 @@ export async function initialImport(username: string): Promise<string> {
 }
 
 export async function refreshAccount(accountId: string): Promise<void> {
-  const account = await prisma.trackedAccount.findUniqueOrThrow({
+  const account = await prisma.trackedAccount.findUnique({
     where: { id: accountId },
     include: { _count: { select: { media: true } } },
   });
+
+  if (!account) {
+    console.log(`[refreshAccount] Account ${accountId} not found, skipping`);
+    return;
+  }
 
   let stubs: MediaStub[] = [];
   let fetchFailed = false;

@@ -14,6 +14,8 @@ import {
   Copy,
   Check,
   ShieldAlert,
+  StickyNote,
+  Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -37,6 +39,7 @@ interface AccountStat {
   fullName: string | null;
   isVerified: boolean;
   status: string;
+  note: string | null;
   importing: boolean;
   videosTracked: number;
   totalMediaCount: number;
@@ -98,6 +101,8 @@ export function AccountsPage() {
   const [copyStatusFilter, setCopyStatusFilter] = useState<"all" | "odlicni" | "banned">("all");
   const [copyGroupFilter, setCopyGroupFilter] = useState<"all" | "noGroup" | string>("all");
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: "single" | "bulk"; id?: string; username?: string; count?: number } | null>(null);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editNoteValue, setEditNoteValue] = useState<string>("");
   const [showSelectDialog, setShowSelectDialog] = useState(false);
   const [selectStatusFilter, setSelectStatusFilter] = useState<"all" | "odlicni" | "banned">("all");
   const [selectGroupFilter, setSelectGroupFilter] = useState<"all" | "noGroup" | string>("all");
@@ -195,6 +200,27 @@ export function AccountsPage() {
   function handleDelete(e: React.MouseEvent, accountId: string, username: string) {
     e.stopPropagation();
     setDeleteConfirm({ type: "single", id: accountId, username });
+  }
+
+  function startEditNote(e: React.MouseEvent, account: AccountStat) {
+    e.stopPropagation();
+    setEditingNoteId(account.id);
+    setEditNoteValue(account.note || "");
+  }
+
+  async function saveNote(accountId: string) {
+    try {
+      await fetch(`/api/accounts?id=${accountId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note: editNoteValue.trim() || null }),
+      });
+      setAccounts((prev) =>
+        prev.map((a) => (a.id === accountId ? { ...a, note: editNoteValue.trim() || null } : a))
+      );
+    } catch {}
+    setEditingNoteId(null);
+    setEditNoteValue("");
   }
 
   async function confirmDeleteSingle() {
@@ -693,11 +719,11 @@ export function AccountsPage() {
           <div className="size-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
         </div>
       ) : (
-        <div className="rounded-xl border border-border">
+        <div className="rounded-xl border border-border overflow-hidden">
           <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-12 pl-4">
+            <TableHeader className="bg-muted/30">
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="w-12 pl-4 h-11">
                   <label className="flex items-center justify-center cursor-pointer py-1 px-1">
                     <input
                       type="checkbox"
@@ -707,7 +733,7 @@ export function AccountsPage() {
                     />
                   </label>
                 </TableHead>
-                <TableHead>Account</TableHead>
+                <TableHead className="h-11">Account</TableHead>
                 <SortableHeader field="videosTracked">Videos</SortableHeader>
                 <SortableHeader field="totalViews" className="text-right">Total Views</SortableHeader>
                 <SortableHeader field="avgVideoViews" className="text-right">Avg Views</SortableHeader>
@@ -728,10 +754,10 @@ export function AccountsPage() {
                 displayedAccounts.map((account) => (
                   <TableRow
                     key={account.id}
-                    className={`cursor-pointer hover:bg-accent/50 ${selectedIds.has(account.id) ? "bg-primary/5" : ""}`}
+                    className={`cursor-pointer hover:bg-accent/40 ${selectedIds.has(account.id) ? "bg-primary/5" : ""}`}
                     onClick={() => router.push(`/account/${account.id}`)}
                   >
-                    <TableCell className="pl-4" onClick={(e) => e.stopPropagation()}>
+                    <TableCell className="pl-4 py-3" onClick={(e) => e.stopPropagation()}>
                       <label className="flex items-center justify-center cursor-pointer py-2 px-1">
                         <input
                           type="checkbox"
@@ -742,13 +768,13 @@ export function AccountsPage() {
                       </label>
                     </TableCell>
                     <TableCell>
-                      <div>
-                        <div className="flex items-center gap-2">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <a
                             href={`https://www.instagram.com/${account.username}/`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="font-medium hover:text-primary hover:underline"
+                            className="font-medium text-sm hover:text-primary hover:underline"
                             onClick={(e) => e.stopPropagation()}
                           >
                             @{account.username}
@@ -765,17 +791,58 @@ export function AccountsPage() {
                               Banned
                             </span>
                           )}
-                          {account.groups.length > 0 && (
-                            <div className="flex gap-1">
-                              {account.groups.map((g) => (
-                                <span
-                                  key={g.id}
-                                  className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
-                                >
-                                  {g.name}
-                                </span>
-                              ))}
+                          {account.groups.map((g) => (
+                            <span
+                              key={g.id}
+                              className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+                            >
+                              {g.name}
+                            </span>
+                          ))}
+                          {editingNoteId === account.id ? (
+                            <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                              <input
+                                value={editNoteValue}
+                                onChange={(e) => setEditNoteValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") saveNote(account.id);
+                                  else if (e.key === "Escape") { setEditingNoteId(null); setEditNoteValue(""); }
+                                }}
+                                placeholder="Add note..."
+                                className="rounded border border-border bg-background px-2 py-0.5 text-xs w-48 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                                autoFocus
+                              />
+                              <button
+                                onClick={() => saveNote(account.id)}
+                                className="text-green-500 hover:text-green-400 text-xs"
+                              >
+                                ✓
+                              </button>
+                              <button
+                                onClick={() => { setEditingNoteId(null); setEditNoteValue(""); }}
+                                className="text-muted-foreground hover:text-foreground text-xs"
+                              >
+                                ✕
+                              </button>
                             </div>
+                          ) : account.note ? (
+                            <button
+                              onClick={(e) => startEditNote(e, account)}
+                              className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 hover:bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-400 max-w-xs group"
+                              title="Click to edit"
+                            >
+                              <StickyNote className="size-3 shrink-0" />
+                              <span className="truncate">{account.note}</span>
+                            </button>
+                          ) : (
+                            <button
+                              onClick={(e) => startEditNote(e, account)}
+                              className="inline-flex items-center gap-1 rounded-full border border-dashed border-border hover:border-amber-500/50 hover:text-amber-400 px-2 py-0.5 text-[10px] text-muted-foreground transition-colors"
+                              title="Add note"
+                            >
+                              <Pencil className="size-3" />
+                              Note
+                            </button>
                           )}
                         </div>
                         {account.fullName && (
@@ -783,14 +850,19 @@ export function AccountsPage() {
                         )}
                       </div>
                     </TableCell>
-                    <TableCell className="font-medium">
+                    <TableCell className="font-medium tabular-nums">
                       {account.videosTracked}
-                      <span className="text-muted-foreground"> / {account.totalMediaCount}</span>
+                      <span className="text-muted-foreground/60 mx-0.5">/</span>
+                      <span className="text-muted-foreground">{account.totalMediaCount}</span>
                     </TableCell>
-                    <TableCell className="text-right font-medium">{formatNumber(account.totalViews)}</TableCell>
-                    <TableCell className="text-right font-medium">{formatNumber(account.avgVideoViews)}</TableCell>
-                    <TableCell className="text-right font-medium">{formatNumber(account.avgLast36Views)}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
+                    <TableCell className="text-right font-semibold tabular-nums">{formatNumber(account.totalViews)}</TableCell>
+                    <TableCell className="text-right font-medium tabular-nums">{formatNumber(account.avgVideoViews)}</TableCell>
+                    <TableCell className="text-right font-medium tabular-nums">
+                      <span className={account.avgLast36Views >= 800 ? "text-green-400" : ""}>
+                        {formatNumber(account.avgLast36Views)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
                       {account.lastPosted
                         ? new Date(account.lastPosted).toLocaleDateString("en-US", {
                             month: "short",
@@ -798,7 +870,7 @@ export function AccountsPage() {
                           })
                         : "—"}
                     </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
+                    <TableCell className="text-xs text-muted-foreground">
                       {account.lastTracked
                         ? new Date(account.lastTracked).toLocaleDateString("en-US", {
                             month: "short",

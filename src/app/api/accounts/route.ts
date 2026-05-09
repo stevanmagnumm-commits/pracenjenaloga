@@ -74,6 +74,26 @@ export async function POST(request: NextRequest) {
   );
 }
 
+export async function PATCH(request: NextRequest) {
+  const { searchParams } = new URL(request.url);
+  const id = searchParams.get("id");
+  if (!id) {
+    return NextResponse.json({ error: "Missing account id" }, { status: 400 });
+  }
+  
+  const body = await request.json();
+  const { note } = body as { note?: string | null };
+  
+  const updated = await prisma.trackedAccount.update({
+    where: { id },
+    data: {
+      ...(note !== undefined && { note: note || null }),
+    },
+  });
+  
+  return NextResponse.json(updated);
+}
+
 export async function DELETE(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get("id");

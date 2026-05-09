@@ -94,6 +94,7 @@ export async function GET(req: NextRequest) {
         fullName: account.fullName,
         isVerified: account.isVerified,
         status: account.status ?? "active",
+        note: account.note ?? null,
         // Pre-created during a bulk import but initialImport hasn't completed
         // yet — lastRefreshedAt is only set at the end of initialImport.
         importing: account.lastRefreshedAt === null,

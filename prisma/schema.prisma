@@ -37,6 +37,7 @@ model TrackedAccount {
   profilePicUrl   String?
   isVerified      Boolean           @default(false)
   status          String            @default("active") // active, possibly_banned
+  note            String?
   refreshInterval String            @default("EIGHT_HOURS") // DAILY, TWELVE_HOURS, EIGHT_HOURS, ONE_HOUR
   priority        Int               @default(2) // 1=high, 2=medium, 3=low
   lastRefreshedAt DateTime?

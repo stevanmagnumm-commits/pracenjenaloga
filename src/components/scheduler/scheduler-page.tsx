@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Upload, Trash2, ArrowUpDown, X, Loader2, Calendar, Copy, Check } from "lucide-react";
+import { Upload, ArrowUpDown, X, Loader2, Calendar, Copy, Check, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -42,6 +42,12 @@ export function SchedulerPage() {
   const [editDateValue, setEditDateValue] = useState<string>("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [copied, setCopied] = useState(false);
+  const [showAddDialog, setShowAddDialog] = useState(false);
+  const [addUsername, setAddUsername] = useState("");
+  const [addCategory, setAddCategory] = useState<"ODLIČAN" | "DOBAR" | "SREDNJI">("ODLIČAN");
+  const [addExpiryDate, setAddExpiryDate] = useState("");
+  const [addNote, setAddNote] = useState("");
+  const [addLoading, setAddLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchEntries = useCallback(async () => {
@@ -115,6 +121,52 @@ export function SchedulerPage() {
     if (!confirm(`Remove @${username} from scheduler?`)) return;
     try {
       await fetch(`/api/scheduler?id=${id}`, { method: "DELETE" });
+      fetchEntries();
+    } catch {}
+  }
+
+  async function handleAddAccount() {
+    if (!addUsername.trim()) return;
+    setAddLoading(true);
+    try {
+      const res = await fetch("/api/scheduler", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: addUsername.trim(),
+          category: addCategory,
+          expiryDate: addExpiryDate || null,
+          note: addNote.trim() || null,
+        }),
+      });
+      if (res.ok) {
+        setAddUsername("");
+        setAddCategory("ODLIČAN");
+        setAddExpiryDate("");
+        setAddNote("");
+        setShowAddDialog(false);
+        fetchEntries();
+      } else {
+        const data = await res.json();
+        alert(`Error: ${data.error || "Failed to add"}`);
+      }
+    } catch {
+      alert("Error adding account");
+    } finally {
+      setAddLoading(false);
+    }
+  }
+
+  async function handleBulkDelete() {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Remove ${selectedIds.size} accounts from scheduler?`)) return;
+    try {
+      await Promise.all(
+        Array.from(selectedIds).map((id) =>
+          fetch(`/api/scheduler?id=${id}`, { method: "DELETE" })
+        )
+      );
+      setSelectedIds(new Set());
       fetchEntries();
     } catch {}
   }
@@ -274,10 +326,16 @@ export function SchedulerPage() {
         </div>
         <div className="flex items-center gap-2">
           {selectedIds.size > 0 && (
-            <Button variant="outline" size="sm" onClick={handleCopySelected}>
-              {copied ? <Check className="mr-1.5 size-4 text-green-500" /> : <Copy className="mr-1.5 size-4" />}
-              {copied ? "Copied!" : `Copy ${selectedIds.size}`}
-            </Button>
+            <>
+              <Button variant="outline" size="sm" onClick={handleCopySelected}>
+                {copied ? <Check className="mr-1.5 size-4 text-green-500" /> : <Copy className="mr-1.5 size-4" />}
+                {copied ? "Copied!" : `Copy ${selectedIds.size}`}
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleBulkDelete} className="text-red-500 hover:text-red-400 hover:bg-red-500/10">
+                <X className="mr-1.5 size-4" />
+                Remove {selectedIds.size}
+              </Button>
+            </>
           )}
           <input
             ref={fileInputRef}
@@ -286,6 +344,10 @@ export function SchedulerPage() {
             onChange={handleFileUpload}
             className="hidden"
           />
+          <Button variant="outline" size="sm" onClick={() => setShowAddDialog(true)}>
+            <Plus className="mr-1.5 size-4" />
+            Add Account
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -483,6 +545,73 @@ export function SchedulerPage() {
             </TableBody>
           </Table>
         </div>
+      )}
+
+      {/* Add Account Dialog */}
+      {showAddDialog && (
+        <>
+          <div className="fixed inset-0 z-50 bg-black/60" onClick={() => setShowAddDialog(false)} />
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="w-full max-w-md rounded-xl border border-border bg-card shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-border px-5 py-4">
+                <h2 className="text-lg font-semibold">Add Account to Scheduler</h2>
+                <button onClick={() => setShowAddDialog(false)} className="text-muted-foreground hover:text-foreground">
+                  <X className="size-5" />
+                </button>
+              </div>
+              <div className="p-5 space-y-4">
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Username</label>
+                  <input
+                    value={addUsername}
+                    onChange={(e) => setAddUsername(e.target.value)}
+                    placeholder="username (without @)"
+                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Category</label>
+                  <select
+                    value={addCategory}
+                    onChange={(e) => setAddCategory(e.target.value as "ODLIČAN" | "DOBAR" | "SREDNJI")}
+                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  >
+                    <option value="ODLIČAN">ODLIČAN</option>
+                    <option value="DOBAR">DOBAR</option>
+                    <option value="SREDNJI">SREDNJI</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Expiry Date (optional)</label>
+                  <input
+                    type="date"
+                    value={addExpiryDate}
+                    onChange={(e) => setAddExpiryDate(e.target.value)}
+                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Note (optional)</label>
+                  <input
+                    value={addNote}
+                    onChange={(e) => setAddNote(e.target.value)}
+                    placeholder="Optional note"
+                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
+                <div className="flex gap-2 pt-2 border-t border-border">
+                  <Button variant="outline" className="flex-1" onClick={() => setShowAddDialog(false)}>
+                    Cancel
+                  </Button>
+                  <Button className="flex-1" onClick={handleAddAccount} disabled={addLoading || !addUsername.trim()}>
+                    {addLoading ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <Plus className="mr-1.5 size-4" />}
+                    Add
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

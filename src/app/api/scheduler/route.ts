@@ -100,6 +100,47 @@ export async function GET() {
   }
 }
 
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { username, category, expiryDate, note } = body;
+    
+    if (!username || !category) {
+      return NextResponse.json({ error: "Missing username or category" }, { status: 400 });
+    }
+    
+    const cleanUsername = String(username).trim().toLowerCase().replace(/^@/, "");
+    if (!cleanUsername) {
+      return NextResponse.json({ error: "Invalid username" }, { status: 400 });
+    }
+    
+    const upperCategory = String(category).toUpperCase();
+    if (!["ODLIČAN", "DOBAR", "SREDNJI"].includes(upperCategory)) {
+      return NextResponse.json({ error: "Invalid category" }, { status: 400 });
+    }
+    
+    const entry = await prisma.scheduleEntry.upsert({
+      where: { username: cleanUsername },
+      update: {
+        category: upperCategory,
+        expiryDate: expiryDate ? new Date(expiryDate) : null,
+        note: note || null,
+      },
+      create: {
+        username: cleanUsername,
+        category: upperCategory,
+        expiryDate: expiryDate ? new Date(expiryDate) : null,
+        note: note || null,
+      },
+    });
+    
+    return NextResponse.json(entry);
+  } catch (error) {
+    console.error("Scheduler POST error:", error);
+    return NextResponse.json({ error: "Failed to create" }, { status: 500 });
+  }
+}
+
 export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json();

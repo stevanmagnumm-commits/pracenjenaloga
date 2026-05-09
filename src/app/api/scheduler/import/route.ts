@@ -68,10 +68,25 @@ export async function POST(req: NextRequest) {
       }
     }
     
-    // Deduplicate by username (later occurrences overwrite earlier)
+    // Deduplicate by username — prefer entries WITH a date over those without,
+    // since some sheets (like "Svi (Sortirano)") include duplicate rows that may
+    // have empty date fields and would otherwise clobber good data.
     const uniqueMap = new Map<string, ParsedRow>();
     for (const row of allRows) {
-      uniqueMap.set(row.username, row);
+      const existing = uniqueMap.get(row.username);
+      if (!existing) {
+        uniqueMap.set(row.username, row);
+        continue;
+      }
+      // Prefer the row that has a date
+      if (!existing.expiryDate && row.expiryDate) {
+        uniqueMap.set(row.username, row);
+      } else if (existing.expiryDate && !row.expiryDate) {
+        // keep existing
+      } else if (row.note && !existing.note) {
+        // both have/don't have date equally — prefer one with note
+        uniqueMap.set(row.username, row);
+      }
     }
     const uniqueRows = Array.from(uniqueMap.values());
     

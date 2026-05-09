@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Film, Users, Plus, Instagram, AtSign, Music, Ghost, ShieldAlert } from "lucide-react";
+import { LayoutDashboard, Film, Users, Plus, Instagram, AtSign, Music, Ghost, ShieldAlert, Calendar } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const igNavItems = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/videos", label: "All Videos", icon: Film },
   { href: "/accounts", label: "All Accounts", icon: Users },
+  { href: "/scheduler", label: "Scheduler", icon: Calendar },
   { href: "/ig-ban-checker", label: "Ban Checker", icon: ShieldAlert },
 ];
 

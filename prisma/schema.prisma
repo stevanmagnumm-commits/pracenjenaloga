@@ -103,6 +103,16 @@ model ApiUsage {
   @@unique([month])
 }
 
+model ScheduleEntry {
+  id         String   @id @default(cuid())
+  username   String   @unique
+  category   String   // ODLIČAN, DOBAR, SREDNJI
+  expiryDate DateTime?
+  note       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
 model SnapchatGroup {
   id        String                  @id @default(cuid())
   name      String                  @unique

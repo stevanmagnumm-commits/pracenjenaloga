@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
         if (!cleanUsername || cleanUsername.length < 2) continue;
         
         const category = String(row.category || "").trim().toUpperCase();
-        if (!["ODLIČAN", "DOBAR", "SREDNJI"].includes(category)) continue;
+        if (!["ODLIČAN", "DOBAR", "LOŠI", "SHADOWBANNED", "SREDNJI"].includes(category)) continue;
         
         let expiryDate: Date | null = null;
         if (typeof row.expiryDate === "number" && row.expiryDate > 0) {

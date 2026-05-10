@@ -63,11 +63,15 @@ export async function GET() {
       let urgencyStatus = "no_date";
       
       if (entry.expiryDate) {
+        // Compare in local time so the day flip happens at local midnight
+        // (e.g. for Serbia/UTC+2, "20d left" becomes "19d left" at 00:00
+        // local, not 02:00 local). Stored UTC-midnight dates still resolve
+        // to the correct local calendar date for any UTC+ timezone.
         const now = new Date();
-        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const todayMs = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
         const expiry = new Date(entry.expiryDate);
-        const expiryDay = new Date(expiry.getFullYear(), expiry.getMonth(), expiry.getDate());
-        daysRemaining = Math.round((expiryDay.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        const expiryMs = new Date(expiry.getFullYear(), expiry.getMonth(), expiry.getDate()).getTime();
+        daysRemaining = Math.round((expiryMs - todayMs) / (1000 * 60 * 60 * 24));
         
         if (daysRemaining < 0) urgencyStatus = "expired";
         else if (daysRemaining === 0) urgencyStatus = "today";
@@ -115,7 +119,7 @@ export async function POST(req: NextRequest) {
     }
     
     const upperCategory = String(category).toUpperCase();
-    if (!["ODLIČAN", "DOBAR", "SREDNJI"].includes(upperCategory)) {
+    if (!["ODLIČAN", "DOBAR", "LOŠI", "SHADOWBANNED", "SREDNJI"].includes(upperCategory)) {
       return NextResponse.json({ error: "Invalid category" }, { status: 400 });
     }
     

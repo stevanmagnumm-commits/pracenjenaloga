@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { refreshAccount } from "@/lib/refresh";
+import { recategorizeScheduler } from "@/lib/scheduler-recategorize";
 import { prisma } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -87,6 +88,24 @@ export async function POST(request: NextRequest) {
           refreshAllProgress.errors.push({ username: account.username, error: message });
         }
         refreshAllProgress.completed++;
+      }
+      refreshAllProgress.current = "Recategorizing scheduler...";
+      try {
+        const result = await recategorizeScheduler();
+        console.log(
+          `[refreshAll] Scheduler recategorized: ${result.changed} changed, ${result.orphansRemoved} orphans removed (of ${result.total} total, ${result.skipped} skipped)`
+        );
+        if (result.removedUsernames.length > 0) {
+          console.log(`[refreshAll]   Removed orphans: ${result.removedUsernames.map((u) => "@" + u).join(", ")}`);
+        }
+        if (result.changes.length > 0) {
+          for (const c of result.changes) {
+            console.log(`[refreshAll]   @${c.username}: ${c.from} → ${c.to} (avg ${c.avgViews})`);
+          }
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        console.error(`[refreshAll] Recategorize failed:`, message);
       }
       refreshAllProgress.current = null;
       refreshAllProgress.running = false;

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Upload, ArrowUpDown, X, Loader2, Calendar, Copy, Check, Plus } from "lucide-react";
+import { Upload, Download, ArrowUpDown, X, Loader2, Calendar, Copy, Check, Plus, Pencil, StickyNote, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -37,17 +37,26 @@ export function SchedulerPage() {
   const [sort, setSort] = useState<SortField>("daysRemaining");
   const [dir, setDir] = useState<"asc" | "desc">("asc");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
-  const [urgencyFilter, setUrgencyFilter] = useState<string>("all");
   const [editingDateId, setEditingDateId] = useState<string | null>(null);
   const [editDateValue, setEditDateValue] = useState<string>("");
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editNoteValue, setEditNoteValue] = useState<string>("");
+  const [editingPostsLeftId, setEditingPostsLeftId] = useState<string | null>(null);
+  const [editPostsLeftValue, setEditPostsLeftValue] = useState<string>("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [copied, setCopied] = useState(false);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [addUsername, setAddUsername] = useState("");
-  const [addCategory, setAddCategory] = useState<"ODLIČAN" | "DOBAR" | "SREDNJI">("ODLIČAN");
+  const [addCategory, setAddCategory] = useState<"ODLIČAN" | "DOBAR" | "LOŠI" | "SHADOWBANNED">("ODLIČAN");
   const [addExpiryDate, setAddExpiryDate] = useState("");
   const [addNote, setAddNote] = useState("");
   const [addLoading, setAddLoading] = useState(false);
+  const [showImportDialog, setShowImportDialog] = useState(false);
+  const [groups, setGroups] = useState<{ id: string; name: string; memberCount: number }[]>([]);
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set());
+  const [includeUngrouped, setIncludeUngrouped] = useState(true);
+  const [skipExisting, setSkipExisting] = useState(true);
+  const [importingGroups, setImportingGroups] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchEntries = useCallback(async () => {
@@ -63,6 +72,27 @@ export function SchedulerPage() {
 
   useEffect(() => {
     fetchEntries();
+  }, [fetchEntries]);
+
+  // Auto-refresh: every 5 minutes, and whenever user returns to the tab.
+  // This guarantees that "X days left" decrements without requiring a manual
+  // page reload, even if the page stays open past midnight.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchEntries();
+    }, 5 * 60 * 1000);
+    
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        fetchEntries();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
   }, [fetchEntries]);
 
   async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -117,12 +147,86 @@ export function SchedulerPage() {
     setEditDateValue("");
   }
 
+  function startEditNote(entry: ScheduleEntry) {
+    setEditingNoteId(entry.id);
+    setEditNoteValue(entry.note || "");
+  }
+
+  async function saveNote(id: string) {
+    try {
+      await fetch("/api/scheduler", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, note: editNoteValue.trim() || null }),
+      });
+      setEntries((prev) =>
+        prev.map((e) => (e.id === id ? { ...e, note: editNoteValue.trim() || null } : e))
+      );
+    } catch {}
+    setEditingNoteId(null);
+    setEditNoteValue("");
+  }
+
   async function handleDelete(id: string, username: string) {
     if (!confirm(`Remove @${username} from scheduler?`)) return;
     try {
       await fetch(`/api/scheduler?id=${id}`, { method: "DELETE" });
       fetchEntries();
     } catch {}
+  }
+
+  async function openImportFromTracker() {
+    try {
+      const res = await fetch("/api/groups", { cache: "no-store" });
+      if (res.ok) setGroups(await res.json());
+    } catch {}
+    setShowImportDialog(true);
+  }
+
+  async function handleImportFromTracker() {
+    setImportingGroups(true);
+    setImportResult("");
+    try {
+      const res = await fetch("/api/scheduler/import-from-tracker", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          groupIds: Array.from(selectedGroupIds),
+          includeUngrouped,
+          skipExisting,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        const parts = [
+          `eligible: ${data.eligible}`,
+          `added: ${data.added}`,
+          `updated: ${data.updated}`,
+          `skipped: ${data.skipped}`,
+        ];
+        const summary = data.summary
+          ? ` · ODLIČAN ${data.summary.ODLIČAN}, DOBAR ${data.summary.DOBAR}, LOŠI ${data.summary.LOŠI}, SHADOWBANNED ${data.summary.SHADOWBANNED}`
+          : "";
+        setImportResult(`Imported from tracker — ${parts.join(", ")}${summary}`);
+        setShowImportDialog(false);
+        fetchEntries();
+      } else {
+        setImportResult(`Error: ${data.error || data.message}`);
+      }
+    } catch (err) {
+      setImportResult(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setImportingGroups(false);
+    }
+  }
+
+  function toggleGroupSelection(id: string) {
+    setSelectedGroupIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   async function handleAddAccount() {
@@ -181,6 +285,38 @@ export function SchedulerPage() {
     }
   }
 
+  function startEditPostsLeft(entry: ScheduleEntry) {
+    setEditingPostsLeftId(entry.id);
+    setEditPostsLeftValue(entry.daysRemaining !== null ? String(entry.daysRemaining) : "");
+  }
+
+  async function savePostsLeft(id: string) {
+    const n = parseInt(editPostsLeftValue, 10);
+    if (isNaN(n)) {
+      setEditingPostsLeftId(null);
+      setEditPostsLeftValue("");
+      return;
+    }
+    // expiryDate = today (local midnight) + n days
+    const today = new Date();
+    const expiry = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    expiry.setDate(expiry.getDate() + n);
+    const yyyy = expiry.getFullYear();
+    const mm = String(expiry.getMonth() + 1).padStart(2, "0");
+    const dd = String(expiry.getDate()).padStart(2, "0");
+    const dateStr = `${yyyy}-${mm}-${dd}`;
+    try {
+      await fetch("/api/scheduler", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, expiryDate: dateStr }),
+      });
+      fetchEntries();
+    } catch {}
+    setEditingPostsLeftId(null);
+    setEditPostsLeftValue("");
+  }
+
   function handleSort(field: SortField) {
     if (sort === field) {
       setDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -220,7 +356,6 @@ export function SchedulerPage() {
   // Filter
   const filteredEntries = entries.filter((e) => {
     if (categoryFilter !== "all" && e.category !== categoryFilter) return false;
-    if (urgencyFilter !== "all" && e.urgencyStatus !== urgencyFilter) return false;
     return true;
   });
 
@@ -235,7 +370,7 @@ export function SchedulerPage() {
         valB = b.daysRemaining ?? 99999;
         break;
       case "category":
-        const catOrder: Record<string, number> = { "ODLIČAN": 1, "DOBAR": 2, "SREDNJI": 3 };
+        const catOrder: Record<string, number> = { "ODLIČAN": 1, "DOBAR": 2, "LOŠI": 3, "SREDNJI": 3, "SHADOWBANNED": 4 };
         valA = catOrder[a.category] ?? 99;
         valB = catOrder[b.category] ?? 99;
         break;
@@ -260,7 +395,8 @@ export function SchedulerPage() {
     total: entries.length,
     odlican: entries.filter((e) => e.category === "ODLIČAN").length,
     dobar: entries.filter((e) => e.category === "DOBAR").length,
-    srednji: entries.filter((e) => e.category === "SREDNJI").length,
+    losi: entries.filter((e) => e.category === "LOŠI" || e.category === "SREDNJI").length,
+    shadowBanned: entries.filter((e) => e.category === "SHADOWBANNED").length,
     expired: entries.filter((e) => e.urgencyStatus === "expired").length,
     urgent: entries.filter((e) => e.urgencyStatus === "today" || e.urgencyStatus === "urgent").length,
     soon: entries.filter((e) => e.urgencyStatus === "soon").length,
@@ -285,7 +421,9 @@ export function SchedulerPage() {
     const colors: Record<string, string> = {
       "ODLIČAN": "bg-green-500/10 text-green-400",
       "DOBAR": "bg-yellow-500/10 text-yellow-400",
-      "SREDNJI": "bg-red-500/10 text-red-400",
+      "LOŠI": "bg-orange-500/10 text-orange-400",
+      "SREDNJI": "bg-orange-500/10 text-orange-400",
+      "SHADOWBANNED": "bg-purple-500/10 text-purple-400",
     };
     return (
       <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${colors[category] || "bg-muted"}`}>
@@ -348,6 +486,21 @@ export function SchedulerPage() {
             <Plus className="mr-1.5 size-4" />
             Add Account
           </Button>
+          <Button variant="outline" size="sm" onClick={openImportFromTracker}>
+            <Users className="mr-1.5 size-4" />
+            Import from Tracker
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              window.location.href = "/api/scheduler/export";
+            }}
+            disabled={entries.length === 0}
+          >
+            <Download className="mr-1.5 size-4" />
+            Download XLSX
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -368,18 +521,26 @@ export function SchedulerPage() {
 
       {/* Stats cards */}
       {entries.length > 0 && (
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
           <div className="rounded-lg border border-border bg-card p-3">
             <p className="text-xs text-muted-foreground">ODLIČAN</p>
             <p className="text-2xl font-bold text-green-400">{stats.odlican}</p>
+            <p className="text-[10px] text-muted-foreground">800+ avg</p>
           </div>
           <div className="rounded-lg border border-border bg-card p-3">
             <p className="text-xs text-muted-foreground">DOBAR</p>
             <p className="text-2xl font-bold text-yellow-400">{stats.dobar}</p>
+            <p className="text-[10px] text-muted-foreground">200-799 avg</p>
           </div>
           <div className="rounded-lg border border-border bg-card p-3">
-            <p className="text-xs text-muted-foreground">SREDNJI</p>
-            <p className="text-2xl font-bold text-red-400">{stats.srednji}</p>
+            <p className="text-xs text-muted-foreground">LOŠI</p>
+            <p className="text-2xl font-bold text-orange-400">{stats.losi}</p>
+            <p className="text-[10px] text-muted-foreground">50-199 avg</p>
+          </div>
+          <div className="rounded-lg border border-border bg-card p-3">
+            <p className="text-xs text-muted-foreground">SHADOWBANNED</p>
+            <p className="text-2xl font-bold text-purple-400">{stats.shadowBanned}</p>
+            <p className="text-[10px] text-muted-foreground">&lt;50 avg</p>
           </div>
           <div className="rounded-lg border border-border bg-card p-3">
             <p className="text-xs text-muted-foreground">No date</p>
@@ -392,7 +553,7 @@ export function SchedulerPage() {
       {entries.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-muted-foreground mr-1">Category:</span>
-          {["all", "ODLIČAN", "DOBAR", "SREDNJI"].map((c) => (
+          {["all", "ODLIČAN", "DOBAR", "LOŠI", "SHADOWBANNED"].map((c) => (
             <button
               key={c}
               onClick={() => setCategoryFilter(c)}
@@ -401,26 +562,6 @@ export function SchedulerPage() {
               }`}
             >
               {c === "all" ? "All" : c}
-            </button>
-          ))}
-          <span className="text-xs text-muted-foreground mx-2">·</span>
-          <span className="text-xs text-muted-foreground mr-1">Urgency:</span>
-          {[
-            { v: "all", l: "All" },
-            { v: "expired", l: "ISTEKAO" },
-            { v: "urgent", l: "Hitno" },
-            { v: "soon", l: "Uskoro" },
-            { v: "ok", l: "U redu" },
-            { v: "no_date", l: "Bez datuma" },
-          ].map((u) => (
-            <button
-              key={u.v}
-              onClick={() => setUrgencyFilter(u.v)}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                urgencyFilter === u.v ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {u.l}
             </button>
           ))}
         </div>
@@ -453,9 +594,9 @@ export function SchedulerPage() {
                 <SortableHeader field="username">Username</SortableHeader>
                 <SortableHeader field="category">Category</SortableHeader>
                 <TableHead>Expiry</TableHead>
+                <TableHead>Posts left</TableHead>
                 <SortableHeader field="daysRemaining">Status</SortableHeader>
                 <SortableHeader field="avgLast36Views" className="text-right">Avg (last 36)</SortableHeader>
-                <TableHead>Note</TableHead>
                 <TableHead className="w-10" />
               </TableRow>
             </TableHeader>
@@ -471,7 +612,7 @@ export function SchedulerPage() {
                     />
                   </TableCell>
                   <TableCell>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <a
                         href={`https://www.instagram.com/${entry.username}/`}
                         target="_blank"
@@ -485,6 +626,50 @@ export function SchedulerPage() {
                       )}
                       {!entry.isTracked && (
                         <span className="rounded-full bg-orange-500/10 px-1.5 py-0.5 text-[10px] font-medium text-orange-400">Untracked</span>
+                      )}
+                      {editingNoteId === entry.id ? (
+                        <div className="flex items-center gap-1">
+                          <input
+                            value={editNoteValue}
+                            onChange={(e) => setEditNoteValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") saveNote(entry.id);
+                              else if (e.key === "Escape") { setEditingNoteId(null); setEditNoteValue(""); }
+                            }}
+                            placeholder="Add note..."
+                            className="rounded border border-border bg-background px-2 py-0.5 text-xs w-40 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                            autoFocus
+                          />
+                          <button
+                            onClick={() => saveNote(entry.id)}
+                            className="text-green-500 hover:text-green-400 text-xs"
+                          >
+                            ✓
+                          </button>
+                          <button
+                            onClick={() => { setEditingNoteId(null); setEditNoteValue(""); }}
+                            className="text-muted-foreground hover:text-foreground text-xs"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ) : entry.note ? (
+                        <button
+                          onClick={() => startEditNote(entry)}
+                          className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 hover:bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-400 max-w-[200px]"
+                          title="Click to edit"
+                        >
+                          <span className="truncate">{entry.note}</span>
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => startEditNote(entry)}
+                          className="inline-flex items-center gap-1 rounded-full border border-dashed border-border hover:border-amber-500/50 hover:text-amber-400 px-2 py-0.5 text-[10px] text-muted-foreground transition-colors"
+                          title="Add note"
+                        >
+                          <Pencil className="size-3" />
+                          Note
+                        </button>
                       )}
                     </div>
                   </TableCell>
@@ -523,12 +708,47 @@ export function SchedulerPage() {
                       </button>
                     )}
                   </TableCell>
+                  <TableCell>
+                    {editingPostsLeftId === entry.id ? (
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          value={editPostsLeftValue}
+                          onChange={(e) => setEditPostsLeftValue(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") savePostsLeft(entry.id);
+                            else if (e.key === "Escape") { setEditingPostsLeftId(null); setEditPostsLeftValue(""); }
+                          }}
+                          placeholder="e.g. 17"
+                          className="w-20 rounded border border-border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+                          autoFocus
+                        />
+                        <button
+                          onClick={() => savePostsLeft(entry.id)}
+                          className="text-xs text-green-500 hover:text-green-400"
+                        >
+                          ✓
+                        </button>
+                        <button
+                          onClick={() => { setEditingPostsLeftId(null); setEditPostsLeftValue(""); }}
+                          className="text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => startEditPostsLeft(entry)}
+                        className="text-xs hover:text-primary tabular-nums"
+                        title="Click to set 'posts left' — date will be today + N days"
+                      >
+                        {entry.daysRemaining !== null ? `${entry.daysRemaining}` : <span className="text-muted-foreground">+ Set</span>}
+                      </button>
+                    )}
+                  </TableCell>
                   <TableCell>{urgencyBadge(entry)}</TableCell>
                   <TableCell className="text-right font-medium">
                     {entry.isTracked ? formatNumber(entry.avgLast36Views) : <span className="text-muted-foreground">—</span>}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground max-w-[200px] truncate">
-                    {entry.note || "—"}
                   </TableCell>
                   <TableCell>
                     <Button
@@ -545,6 +765,82 @@ export function SchedulerPage() {
             </TableBody>
           </Table>
         </div>
+      )}
+
+      {/* Import from Tracker Dialog */}
+      {showImportDialog && (
+        <>
+          <div className="fixed inset-0 z-50 bg-black/60" onClick={() => setShowImportDialog(false)} />
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="w-full max-w-md rounded-xl border border-border bg-card shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between border-b border-border px-5 py-4">
+                <h2 className="text-lg font-semibold">Import from Tracker</h2>
+                <button onClick={() => setShowImportDialog(false)} className="text-muted-foreground hover:text-foreground">
+                  <X className="size-5" />
+                </button>
+              </div>
+              <div className="p-5 space-y-4">
+                <p className="text-xs text-muted-foreground">
+                  Pick which tracker groups to import. Each account will be added to the scheduler with its category
+                  computed from average views of its last 36 reels.
+                </p>
+
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 cursor-pointer rounded-md border border-border px-3 py-2 hover:bg-muted">
+                    <input
+                      type="checkbox"
+                      checked={includeUngrouped}
+                      onChange={(e) => setIncludeUngrouped(e.target.checked)}
+                      className="size-4 rounded border-border accent-primary"
+                    />
+                    <span className="text-sm font-medium">Ungrouped accounts</span>
+                  </label>
+                  {groups.map((g) => (
+                    <label
+                      key={g.id}
+                      className="flex items-center justify-between gap-2 cursor-pointer rounded-md border border-border px-3 py-2 hover:bg-muted"
+                    >
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={selectedGroupIds.has(g.id)}
+                          onChange={() => toggleGroupSelection(g.id)}
+                          className="size-4 rounded border-border accent-primary"
+                        />
+                        <span className="text-sm font-medium">{g.name}</span>
+                      </div>
+                      <span className="text-xs text-muted-foreground">{g.memberCount} accounts</span>
+                    </label>
+                  ))}
+                </div>
+
+                <label className="flex items-center gap-2 cursor-pointer text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={skipExisting}
+                    onChange={(e) => setSkipExisting(e.target.checked)}
+                    className="size-3.5 rounded border-border accent-primary"
+                  />
+                  Skip accounts already in scheduler (uncheck to also re-categorize them)
+                </label>
+
+                <div className="flex gap-2 pt-2 border-t border-border">
+                  <Button variant="outline" className="flex-1" onClick={() => setShowImportDialog(false)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    className="flex-1"
+                    onClick={handleImportFromTracker}
+                    disabled={importingGroups || (!includeUngrouped && selectedGroupIds.size === 0)}
+                  >
+                    {importingGroups ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <Users className="mr-1.5 size-4" />}
+                    Import
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
       )}
 
       {/* Add Account Dialog */}
@@ -573,12 +869,13 @@ export function SchedulerPage() {
                   <label className="text-xs font-medium text-muted-foreground">Category</label>
                   <select
                     value={addCategory}
-                    onChange={(e) => setAddCategory(e.target.value as "ODLIČAN" | "DOBAR" | "SREDNJI")}
+                    onChange={(e) => setAddCategory(e.target.value as "ODLIČAN" | "DOBAR" | "LOŠI" | "SHADOWBANNED")}
                     className="mt-1 w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
                   >
                     <option value="ODLIČAN">ODLIČAN</option>
                     <option value="DOBAR">DOBAR</option>
-                    <option value="SREDNJI">SREDNJI</option>
+                    <option value="LOŠI">LOŠI</option>
+                    <option value="SHADOWBANNED">SHADOWBANNED</option>
                   </select>
                 </div>
                 <div>

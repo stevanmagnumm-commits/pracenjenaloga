@@ -102,11 +102,22 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: "Missing account id" }, { status: 400 });
   }
 
+  const account = await prisma.trackedAccount.findUnique({
+    where: { id },
+    select: { username: true },
+  });
+
   await prisma.mediaSnapshot.deleteMany({
     where: { media: { accountId: id } },
   });
   await prisma.media.deleteMany({ where: { accountId: id } });
   await prisma.accountSnapshot.deleteMany({ where: { accountId: id } });
   await prisma.trackedAccount.delete({ where: { id } });
+
+  // Also remove the scheduler entry so orphans don't pile up.
+  if (account) {
+    await prisma.scheduleEntry.deleteMany({ where: { username: account.username } });
+  }
+
   return NextResponse.json({ success: true });
 }

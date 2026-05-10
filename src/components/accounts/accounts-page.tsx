@@ -436,19 +436,26 @@ export function AccountsPage() {
   async function confirmDeleteBulk() {
     if (!deleteConfirm || deleteConfirm.type !== "bulk") return;
     const count = selectedIds.size;
+    const ids = Array.from(selectedIds);
     try {
-      const ids = Array.from(selectedIds);
-      const results = await Promise.all(
-        ids.map((id) => fetch(`/api/accounts?id=${id}`, { method: "DELETE" }))
-      );
-      const deleted = results.filter((r) => r.ok).length;
+      const res = await fetch(`/api/accounts/bulk-delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Bulk delete failed: ${data.error || data.message || "unknown error"}`);
+        setDeleteConfirm(null);
+        return;
+      }
       setAccounts((prev) => prev.filter((a) => !selectedIds.has(a.id)));
       setSelectedIds(new Set());
-      if (deleted < count) {
-        alert(`Deleted ${deleted} of ${count} accounts. Some may have failed.`);
+      if (data.deleted < count) {
+        alert(`Deleted ${data.deleted} of ${count} accounts. ${data.missing} not found.`);
       }
-    } catch {
-      alert("Error deleting accounts");
+    } catch (err) {
+      alert(`Error deleting accounts: ${err instanceof Error ? err.message : String(err)}`);
     }
     setDeleteConfirm(null);
   }

@@ -22,17 +22,17 @@ export async function POST(request: NextRequest) {
     // Wrap everything in a single transaction so we don't half-delete
     // accounts and leave dangling rows or scheduler ghosts.
     await prisma.$transaction(
-      [
-        prisma.mediaSnapshot.deleteMany({
+      async (tx) => {
+        await tx.mediaSnapshot.deleteMany({
           where: { media: { accountId: { in: foundIds } } },
-        }),
-        prisma.media.deleteMany({ where: { accountId: { in: foundIds } } }),
-        prisma.accountSnapshot.deleteMany({ where: { accountId: { in: foundIds } } }),
-        prisma.accountGroupMember.deleteMany({ where: { accountId: { in: foundIds } } }),
-        prisma.trackedAccount.deleteMany({ where: { id: { in: foundIds } } }),
-        prisma.scheduleEntry.deleteMany({ where: { username: { in: usernames } } }),
-      ],
-      { timeout: 60000 }
+        });
+        await tx.media.deleteMany({ where: { accountId: { in: foundIds } } });
+        await tx.accountSnapshot.deleteMany({ where: { accountId: { in: foundIds } } });
+        await tx.accountGroupMember.deleteMany({ where: { accountId: { in: foundIds } } });
+        await tx.trackedAccount.deleteMany({ where: { id: { in: foundIds } } });
+        await tx.scheduleEntry.deleteMany({ where: { username: { in: usernames } } });
+      },
+      { timeout: 60000, maxWait: 10000 }
     );
 
     return NextResponse.json({

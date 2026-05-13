@@ -56,6 +56,7 @@ export function TrackAccountDialog({
   const [bulkText, setBulkText] = useState("");
   const [refreshInterval, setRefreshInterval] = useState("EIGHT_HOURS");
   const [priority, setPriority] = useState("2");
+  const [postsLeft, setPostsLeft] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [bulkProgress, setBulkProgress] = useState<BulkProgress | null>(null);
@@ -104,6 +105,7 @@ export function TrackAccountDialog({
       setSelectedGroupId("");
       setDuplicates([]);
       setCheckedDuplicates(false);
+      setPostsLeft("");
       stopPolling();
     }
   }, [open]);
@@ -171,6 +173,8 @@ export function TrackAccountDialog({
     setError(null);
 
     try {
+      const postsLeftNum = postsLeft.trim() === "" ? null : Number(postsLeft);
+      const validPostsLeft = postsLeftNum !== null && Number.isFinite(postsLeftNum) && postsLeftNum >= 0;
       const res = await fetch(singleEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -179,6 +183,7 @@ export function TrackAccountDialog({
           ...(!isThreads && {
             refreshInterval,
             priority: Number(priority),
+            ...(validPostsLeft && { postsLeft: postsLeftNum }),
           }),
         }),
       });
@@ -214,6 +219,8 @@ export function TrackAccountDialog({
     setBulkProgress(null);
 
     try {
+      const postsLeftNum = postsLeft.trim() === "" ? null : Number(postsLeft);
+      const validPostsLeft = postsLeftNum !== null && Number.isFinite(postsLeftNum) && postsLeftNum >= 0;
       const res = await fetch(bulkEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -222,6 +229,7 @@ export function TrackAccountDialog({
           ...(!isThreads && {
             refreshInterval,
             priority: Number(priority),
+            ...(validPostsLeft && { postsLeft: postsLeftNum }),
           }),
         }),
       });
@@ -430,6 +438,27 @@ export function TrackAccountDialog({
                       </SelectContent>
                     </Select>
                   </div>
+                </div>
+              )}
+
+              {!isThreads && (
+                <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3">
+                  <label className="text-sm font-medium">
+                    Posts left (auto-add to Scheduler)
+                  </label>
+                  <Input
+                    type="number"
+                    min={0}
+                    placeholder="e.g. 20"
+                    value={postsLeft}
+                    onChange={(e) => setPostsLeft(e.target.value)}
+                    disabled={loading}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Optional. If set, accounts are added to the Scheduler with
+                    expiry = today + N days. Category is auto-detected from
+                    avg views of the last 36 reels.
+                  </p>
                 </div>
               )}
 

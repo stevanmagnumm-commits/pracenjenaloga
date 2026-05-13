@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { initialImport } from "@/lib/refresh";
+import { addToSchedulerWithExpiry } from "@/lib/scheduler-add";
 
 export const dynamic = "force-dynamic";
 import { parseInstagramUrl } from "@/lib/utils";
@@ -24,10 +25,11 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   const body = await request.json();
-  const { input, refreshInterval, priority } = body as {
+  const { input, refreshInterval, priority, postsLeft } = body as {
     input: string;
     refreshInterval?: string;
     priority?: number;
+    postsLeft?: number | null;
   };
 
   const username = parseInstagramUrl(input);
@@ -63,10 +65,25 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  // Run the import in the background (don't await)
-  initialImport(username).catch((error) => {
-    console.error(`[initialImport] Failed for ${username}:`, error);
-  });
+  // Run the import in the background (don't await). When postsLeft is
+  // provided we also auto-create the scheduler entry once the import is
+  // done so the new account immediately shows up on /scheduler.
+  initialImport(username)
+    .then(async () => {
+      if (typeof postsLeft === "number") {
+        try {
+          const result = await addToSchedulerWithExpiry(username, postsLeft);
+          if (result) {
+            console.log(`[scheduler-add] @${username} → ${result.category} (avg36=${result.avg ?? "-"})`);
+          }
+        } catch (err) {
+          console.error(`[scheduler-add] Failed for @${username}:`, err);
+        }
+      }
+    })
+    .catch((error) => {
+      console.error(`[initialImport] Failed for ${username}:`, error);
+    });
 
   return NextResponse.json(
     { ...account, _count: { media: 0 }, importing: true },

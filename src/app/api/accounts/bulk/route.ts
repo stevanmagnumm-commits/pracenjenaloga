@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { initialImport } from "@/lib/refresh";
 import { parseInstagramUrl } from "@/lib/utils";
+import { addToSchedulerWithExpiry } from "@/lib/scheduler-add";
 
 interface BulkProgress {
   total: number;
@@ -30,10 +31,11 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const { usernames: raw, refreshInterval, priority } = body as {
+  const { usernames: raw, refreshInterval, priority, postsLeft } = body as {
     usernames: string[];
     refreshInterval?: string;
     priority?: number;
+    postsLeft?: number | null;
   };
 
   const parsed = raw
@@ -95,6 +97,16 @@ export async function POST(request: NextRequest) {
               ...(priority && { priority }),
             },
           });
+        }
+        if (typeof postsLeft === "number") {
+          try {
+            const result = await addToSchedulerWithExpiry(username, postsLeft);
+            if (result) {
+              console.log(`[bulk scheduler-add] @${username} → ${result.category} (avg36=${result.avg ?? "-"})`);
+            }
+          } catch (err) {
+            console.error(`[bulk scheduler-add] Failed for @${username}:`, err);
+          }
         }
         bulkProgress.successes.push(username);
       } catch (error) {

@@ -16,6 +16,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         ? "threads"
         : "instagram";
 
+  // Standalone routes that should NOT show the admin sidebar — meant to be
+  // shared with external collaborators (e.g. a creator's personal sheet URL).
+  const isStandalone = /^\/creators\/[^/]+$/.test(pathname);
+  if (isStandalone) {
+    return <main className="min-h-screen">{children}</main>;
+  }
+
   return (
     <>
       <Sidebar onTrackAccount={() => setTrackDialogOpen(true)} />

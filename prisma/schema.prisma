@@ -114,6 +114,46 @@ model ScheduleEntry {
   updatedAt  DateTime @updatedAt
 }
 
+model Creator {
+  id              String           @id @default(cuid())
+  name            String           @unique
+  slug            String           @unique
+  color           String?
+  // Per-creator shareable credentials. The Filipino creator logs in with
+  // these on /creators/<slug>; the admin (via the main panel) bypasses
+  // these and gets full powers (Add to Tracker etc).
+  accessUsername  String?
+  accessPassword  String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  accounts        CreatorAccount[]
+}
+
+model CreatorAccount {
+  id           String    @id @default(cuid())
+  creatorId    String
+  // "account" (default) — a real row representing an Instagram account
+  // "separator" — a visual day-divider row (date + label, no credentials)
+  kind         String    @default("account")
+  username     String    @unique
+  password     String?
+  twoFa        String?
+  proxy        String?
+  notes        String?
+  snapAccount  String?
+  scheduledBy  String?
+  scheduledAt  DateTime?
+  postsLeft    Int?
+  expiryDate   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  creator      Creator   @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+
+  @@index([creatorId])
+}
+
 model SnapchatGroup {
   id        String                  @id @default(cuid())
   name      String                  @unique

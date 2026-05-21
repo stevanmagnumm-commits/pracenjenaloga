@@ -36,3 +36,8 @@ next-env.d.ts
 # prisma
 prisma/dev.db
 prisma/dev.db-journal
+prisma/prisma/dev.db
+prisma/prisma/dev.db-journal
+
+# hourly creator-sheet backups (local dev only — on server BACKUP_DIR points elsewhere)
+/backups/

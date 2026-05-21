@@ -2,6 +2,7 @@ export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
     const cron = await import("node-cron");
     const { runSnapchatCheck } = await import("@/lib/snapchat-scheduled-check");
+    const { backupAllCreators } = await import("@/lib/creator-backup");
 
     // Every 2 hours during active window: 10,12,14,16,18,20,22,0
     // Morning report at 10:00 always sends full status
@@ -18,6 +19,21 @@ export async function register() {
       await runSnapchatCheck();
     });
 
+    // Hourly creator-sheets backup → /backups/creators-<timestamp>.xlsx
+    // Override location with BACKUP_DIR env (e.g. point at a mounted volume).
+    cron.default.schedule("5 * * * *", async () => {
+      try {
+        const file = await backupAllCreators();
+        if (file) console.log(`[scheduler] Creator backup written: ${file}`);
+      } catch (e) {
+        console.warn("[scheduler] Creator backup failed:", e);
+      }
+    });
+    // Also run one snapshot at boot so we have something on day 1
+    backupAllCreators().then(
+      (f) => f && console.log(`[scheduler] Initial creator backup: ${f}`),
+    ).catch(() => {});
+
     // Heartbeat every 30 min to confirm cron is alive
     cron.default.schedule("*/30 * * * *", () => {
       console.log(`[scheduler] Heartbeat — ${new Date().toLocaleTimeString()}`);
@@ -31,5 +47,6 @@ export async function register() {
     }, 5 * 60 * 1000);
 
     console.log("[scheduler] Snapchat cron active: checks at 10,12,14,16,18,20,22,0 | pause 2-9 | morning report at 10:00");
+    console.log("[scheduler] Creator backup cron active: every hour @ :05");
   }
 }

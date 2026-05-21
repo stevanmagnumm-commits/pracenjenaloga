@@ -90,3 +90,32 @@ export async function addToSchedulerWithExpiry(
 
   return { category, avg };
 }
+
+/**
+ * Same as addToSchedulerWithExpiry, but the caller already knows the exact
+ * calendar date the account expires on (no postsLeft math needed). Used
+ * when creators type the expiry date directly in their sheet.
+ */
+export async function addToSchedulerWithExpiryDate(
+  username: string,
+  expiryDate: Date | null | undefined,
+): Promise<{ category: string; avg: number | null } | null> {
+  if (!expiryDate) return null;
+
+  const account = await prisma.trackedAccount.findUnique({
+    where: { username },
+    select: { id: true },
+  });
+  if (!account) return null;
+
+  const avg = await computeAvg36(account.id);
+  const category = avg === null ? "SHADOWBANNED" : categoryFor(avg);
+
+  await prisma.scheduleEntry.upsert({
+    where: { username },
+    update: { category, expiryDate },
+    create: { username, category, expiryDate },
+  });
+
+  return { category, avg };
+}

@@ -19,7 +19,23 @@ async function trackApiCall() {
   });
 }
 
-async function apiPost(endpoint: string, body: Record<string, string>, retries = 2): Promise<unknown> {
+// On 429 (burst rate limit) we back off and retry several times — RapidAPI's
+// per-second cap clears in a couple of seconds, so a short wait usually wins.
+const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
+const RETRYABLE_BACKOFF_MS = [2_000, 5_000, 10_000, 20_000, 40_000];
+
+async function retryWait(status: number, attempt: number, endpoint: string, retryAfterHeader: string | null) {
+  // Honor Retry-After header if the server provides one (in seconds)
+  let waitMs = RETRYABLE_BACKOFF_MS[Math.min(attempt, RETRYABLE_BACKOFF_MS.length - 1)];
+  if (retryAfterHeader) {
+    const ra = Number(retryAfterHeader);
+    if (Number.isFinite(ra) && ra > 0) waitMs = Math.max(waitMs, ra * 1000);
+  }
+  console.log(`[api] ${status} on ${endpoint}, retry ${attempt + 1} in ${waitMs}ms`);
+  await new Promise((r) => setTimeout(r, waitMs));
+}
+
+async function apiPost(endpoint: string, body: Record<string, string>, retries = 5): Promise<unknown> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     await trackApiCall();
     const response = await fetch(`${BASE_URL}${endpoint}`, {
@@ -32,9 +48,8 @@ async function apiPost(endpoint: string, body: Record<string, string>, retries =
       body: new URLSearchParams(body).toString(),
     });
     if (response.ok) return response.json();
-    if (response.status === 504 && attempt < retries) {
-      console.log(`[apiPost] 504 timeout on ${endpoint}, retry ${attempt + 1}/${retries}...`);
-      await new Promise((r) => setTimeout(r, 3000));
+    if (RETRYABLE_STATUS.has(response.status) && attempt < retries) {
+      await retryWait(response.status, attempt, endpoint, response.headers.get("retry-after"));
       continue;
     }
     const text = await response.text();
@@ -43,7 +58,7 @@ async function apiPost(endpoint: string, body: Record<string, string>, retries =
   throw new Error("Unreachable");
 }
 
-async function apiGet(endpoint: string, retries = 2): Promise<unknown> {
+async function apiGet(endpoint: string, retries = 5): Promise<unknown> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     await trackApiCall();
     const response = await fetch(`${BASE_URL}${endpoint}`, {
@@ -54,9 +69,8 @@ async function apiGet(endpoint: string, retries = 2): Promise<unknown> {
       },
     });
     if (response.ok) return response.json();
-    if (response.status === 504 && attempt < retries) {
-      console.log(`[apiGet] 504 timeout on ${endpoint}, retry ${attempt + 1}/${retries}...`);
-      await new Promise((r) => setTimeout(r, 3000));
+    if (RETRYABLE_STATUS.has(response.status) && attempt < retries) {
+      await retryWait(response.status, attempt, endpoint, response.headers.get("retry-after"));
       continue;
     }
     const text = await response.text();

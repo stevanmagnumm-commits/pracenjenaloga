@@ -210,6 +210,24 @@ export function AccountsPage() {
     } catch {}
   }
 
+  // Refresh only the currently-selected accounts — handy for spot-checking
+  // whether a few specific accounts are banned without re-scanning everything.
+  async function handleRefreshSelected() {
+    if (refreshProgress?.running || selectedIds.size === 0) return;
+    try {
+      const res = await fetch("/api/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: Array.from(selectedIds) }),
+      });
+      if (res.ok || res.status === 409) {
+        const data = await res.json();
+        setRefreshProgress(data.progress);
+        startPolling();
+      }
+    } catch {}
+  }
+
   // Re-runs initialImport on every TrackedAccount that has an empty igUserId
   // (these are stubs left behind when the profile fetch failed during a bulk
   // import). Uses the new 429-retry logic so burst rate-limits don't poison
@@ -550,6 +568,20 @@ export function AccountsPage() {
                   <Copy className="mr-1.5 size-4" />
                 )}
                 {copied ? "Copied!" : `Copy ${selectedIds.size}`}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRefreshSelected}
+                disabled={isRefreshing}
+                className="text-blue-500 hover:text-blue-400 hover:bg-blue-500/10"
+              >
+                {isRefreshing ? (
+                  <Loader2 className="mr-1.5 size-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-1.5 size-4" />
+                )}
+                Refresh {selectedIds.size}
               </Button>
               <Button variant="outline" size="sm" onClick={handleBulkDelete} className="text-red-500 hover:text-red-400 hover:bg-red-500/10">
                 <Trash2 className="mr-1.5 size-4" />

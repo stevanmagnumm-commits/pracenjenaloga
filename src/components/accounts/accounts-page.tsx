@@ -16,6 +16,7 @@ import {
   ShieldAlert,
   StickyNote,
   Pencil,
+  AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -195,6 +196,29 @@ export function AccountsPage() {
         startPolling();
       }
     } catch {}
+  }
+
+  // Re-runs initialImport on every TrackedAccount that has an empty igUserId
+  // (these are stubs left behind when the profile fetch failed during a bulk
+  // import). Uses the new 429-retry logic so burst rate-limits don't poison
+  // the recovery pass.
+  async function handleRetryIncomplete() {
+    if (!confirm("Retry all incomplete imports (accounts with empty profile data)? This may take a while.")) return;
+    try {
+      const res = await fetch("/api/accounts/retry-incomplete", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || "Failed to start retry");
+        return;
+      }
+      if (data.total === 0) {
+        alert("Nothing to retry — all accounts already have complete profile data.");
+        return;
+      }
+      alert(`Retrying ${data.total} incomplete account(s). Check console / logs for progress.`);
+    } catch (e) {
+      alert("Retry failed: " + (e instanceof Error ? e.message : String(e)));
+    }
   }
 
   function handleDelete(e: React.MouseEvent, accountId: string, username: string) {
@@ -528,6 +552,10 @@ export function AccountsPage() {
           <Button variant="outline" size="sm" onClick={() => setShowGroupDialog(true)}>
             <FolderPlus className="mr-1.5 size-4" />
             Groups
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleRetryIncomplete} title="Re-run failed imports (accounts with empty profile data)">
+            <AlertTriangle className="mr-1.5 size-4" />
+            Retry incomplete
           </Button>
           <Button variant="outline" size="sm" onClick={handleRefreshAll} disabled={isRefreshing}>
             {isRefreshing ? (

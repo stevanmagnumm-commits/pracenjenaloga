@@ -128,6 +128,16 @@ export function AccountsPage() {
     }
   }, [sort, dir, selectedGroupId]);
 
+  // Background intervals (refresh-progress polling, import polling) capture
+  // fetchAccounts in a closure. Without this ref they'd keep calling a STALE
+  // version with the group filter that was active when the interval started —
+  // which would silently revert the view to "all accounts" once a background
+  // refresh finished. Always call through the ref to get the current filter.
+  const fetchAccountsRef = useRef(fetchAccounts);
+  useEffect(() => {
+    fetchAccountsRef.current = fetchAccounts;
+  }, [fetchAccounts]);
+
   useEffect(() => {
     fetchGroups();
   }, [fetchGroups]);
@@ -138,15 +148,17 @@ export function AccountsPage() {
 
   // While any account is still in the import queue, re-poll the stats so the
   // user sees them populate (and disappear from the "Importing" pin) in real
-  // time without a manual refresh.
+  // time without a manual refresh. Uses the ref so the running interval always
+  // honors the current group filter and isn't torn down on every accounts
+  // update.
+  const anyImporting = accounts.some((a) => a.importing);
   useEffect(() => {
-    const anyImporting = accounts.some((a) => a.importing);
     if (!anyImporting) return;
     const id = setInterval(() => {
-      fetchAccounts();
+      fetchAccountsRef.current();
     }, 5000);
     return () => clearInterval(id);
-  }, [accounts, fetchAccounts]);
+  }, [anyImporting]);
 
   useEffect(() => {
     fetch("/api/refresh", { cache: "no-store" })
@@ -171,7 +183,7 @@ export function AccountsPage() {
         setRefreshProgress(p);
         if (!p.running) {
           stopPolling();
-          fetchAccounts();
+          fetchAccountsRef.current();
         }
       } catch {}
     }, 3000);

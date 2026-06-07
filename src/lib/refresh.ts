@@ -53,6 +53,55 @@ export interface RefreshProgress {
   running: boolean;
 }
 
+export type BanCheckResult = "alive" | "banned" | "inconclusive";
+
+/**
+ * Lightweight ban check for a single account. Hits ONLY the profile endpoint
+ * (1 call, or 2 if the first says "missing" and we double-check) — no reels
+ * fetching — so it's far cheaper than a full refresh. Updates status both ways:
+ *   - confirmed missing  → possibly_banned
+ *   - alive              → active  (clears a previous possibly_banned)
+ *   - inconclusive       → left untouched
+ */
+export async function checkAccountBan(accountId: string): Promise<BanCheckResult> {
+  const account = await prisma.trackedAccount.findUnique({
+    where: { id: accountId },
+    select: { id: true, username: true, status: true },
+  });
+  if (!account) return "inconclusive";
+
+  const first = await probeProfileMissing(account.username);
+
+  let result: BanCheckResult;
+  if (first === "alive") {
+    result = "alive";
+  } else if (first === "inconclusive") {
+    result = "inconclusive";
+  } else {
+    // First probe says missing — wait then re-check to avoid burst-induced
+    // false positives, mirroring confirmBannedViaProfile.
+    await new Promise((r) => setTimeout(r, 8000));
+    const second = await probeProfileMissing(account.username);
+    result = second === "missing" ? "banned" : second === "alive" ? "alive" : "inconclusive";
+  }
+
+  if (result === "banned" && account.status !== "possibly_banned") {
+    await prisma.trackedAccount.update({
+      where: { id: accountId },
+      data: { status: "possibly_banned", lastRefreshedAt: new Date() },
+    });
+    console.log(`[checkBan] @${account.username}: → possibly_banned`);
+  } else if (result === "alive" && account.status === "possibly_banned") {
+    await prisma.trackedAccount.update({
+      where: { id: accountId },
+      data: { status: "active", lastRefreshedAt: new Date() },
+    });
+    console.log(`[checkBan] @${account.username}: recovered → active`);
+  }
+
+  return result;
+}
+
 interface MediaStub {
   igMediaId: string;
   shortcode: string;

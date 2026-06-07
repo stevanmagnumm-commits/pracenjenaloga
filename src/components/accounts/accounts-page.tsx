@@ -61,6 +61,18 @@ interface RefreshProgress {
   running: boolean;
 }
 
+interface BanCheckProgress {
+  total: number;
+  completed: number;
+  current: string | null;
+  alive: number;
+  banned: number;
+  inconclusive: number;
+  recovered: string[];
+  newlyBanned: string[];
+  running: boolean;
+}
+
 interface GroupWithCount {
   id: string;
   name: string;
@@ -78,6 +90,8 @@ export function AccountsPage() {
   const [dir, setDir] = useState<SortDir>("desc");
   const [refreshProgress, setRefreshProgress] = useState<RefreshProgress | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [banCheckProgress, setBanCheckProgress] = useState<BanCheckProgress | null>(null);
+  const banPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [lastClickedId, setLastClickedId] = useState<string | null>(null);
@@ -224,6 +238,44 @@ export function AccountsPage() {
         const data = await res.json();
         setRefreshProgress(data.progress);
         startPolling();
+      }
+    } catch {}
+  }
+
+  // Lightweight ban check on selected accounts (profile probe only, no reels).
+  // Recovers accounts that are alive again (→ active) and flags ones that
+  // vanished (→ possibly_banned), then recategorizes the scheduler.
+  function startBanPolling() {
+    if (banPollRef.current) clearInterval(banPollRef.current);
+    banPollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch("/api/accounts/check-bans", { cache: "no-store" });
+        const p: BanCheckProgress = await res.json();
+        setBanCheckProgress(p);
+        if (!p.running) {
+          if (banPollRef.current) clearInterval(banPollRef.current);
+          banPollRef.current = null;
+          fetchAccountsRef.current();
+        }
+      } catch {}
+    }, 2000);
+  }
+
+  async function handleCheckBans() {
+    if (banCheckProgress?.running || selectedIds.size === 0) return;
+    try {
+      const res = await fetch("/api/accounts/check-bans", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: Array.from(selectedIds) }),
+      });
+      if (res.ok || res.status === 409) {
+        const data = await res.json();
+        setBanCheckProgress(data.progress ?? { total: selectedIds.size, completed: 0, current: null, alive: 0, banned: 0, inconclusive: 0, recovered: [], newlyBanned: [], running: true });
+        startBanPolling();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Failed to start ban check");
       }
     } catch {}
   }
@@ -572,6 +624,20 @@ export function AccountsPage() {
               <Button
                 variant="outline"
                 size="sm"
+                onClick={handleCheckBans}
+                disabled={banCheckProgress?.running}
+                className="text-amber-500 hover:text-amber-400 hover:bg-amber-500/10"
+              >
+                {banCheckProgress?.running ? (
+                  <Loader2 className="mr-1.5 size-4 animate-spin" />
+                ) : (
+                  <ShieldAlert className="mr-1.5 size-4" />
+                )}
+                Check bans {selectedIds.size}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={handleRefreshSelected}
                 disabled={isRefreshing}
                 className="text-blue-500 hover:text-blue-400 hover:bg-blue-500/10"
@@ -772,6 +838,53 @@ export function AccountsPage() {
               }}
             />
           </div>
+        </div>
+      )}
+
+      {/* Ban check progress */}
+      {banCheckProgress?.running && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 space-y-2">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">
+              Checking bans {banCheckProgress.completed}/{banCheckProgress.total}
+              {banCheckProgress.current && (
+                <span className="ml-1.5 text-foreground font-medium">— {banCheckProgress.current.startsWith("Recat") ? banCheckProgress.current : `@${banCheckProgress.current}`}</span>
+              )}
+            </span>
+            <span className="text-amber-400">
+              {banCheckProgress.alive} alive · {banCheckProgress.banned} banned
+            </span>
+          </div>
+          <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+            <div
+              className="h-full rounded-full bg-amber-500 transition-all duration-500"
+              style={{ width: `${banCheckProgress.total > 0 ? (banCheckProgress.completed / banCheckProgress.total) * 100 : 0}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Ban check result summary */}
+      {banCheckProgress && !banCheckProgress.running && banCheckProgress.completed > 0 && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium text-amber-300">
+              Ban check done — {banCheckProgress.alive} alive, {banCheckProgress.banned} banned, {banCheckProgress.inconclusive} inconclusive
+            </p>
+            <button onClick={() => setBanCheckProgress(null)} className="text-amber-400/70 hover:text-amber-300">
+              <X className="size-4" />
+            </button>
+          </div>
+          {banCheckProgress.recovered.length > 0 && (
+            <p className="mt-1 text-xs text-green-400">
+              Recovered (un-banned): {banCheckProgress.recovered.map((u) => "@" + u).join(", ")}
+            </p>
+          )}
+          {banCheckProgress.newlyBanned.length > 0 && (
+            <p className="mt-1 text-xs text-red-400">
+              Newly banned: {banCheckProgress.newlyBanned.map((u) => "@" + u).join(", ")}
+            </p>
+          )}
         </div>
       )}
 

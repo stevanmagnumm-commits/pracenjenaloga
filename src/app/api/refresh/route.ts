@@ -21,6 +21,44 @@ let refreshAllProgress: RefreshAllProgress = {
   running: false,
 };
 
+// How many accounts to refresh concurrently. Each refresh is mostly waiting on
+// the Instagram API, so running several in parallel cuts wall-clock time a lot.
+// The API layer already retries 429/5xx with backoff, so a modest pool keeps us
+// fast without hammering rate limits.
+const REFRESH_CONCURRENCY = 4;
+
+// Process accounts through a fixed-size worker pool, calling refreshAccount on
+// each and updating shared progress as they complete.
+async function runRefreshPool(
+  accounts: Array<{ id: string; username: string }>,
+  label: string,
+) {
+  let nextIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= accounts.length) return;
+      const account = accounts[i];
+      refreshAllProgress.current = account.username;
+      try {
+        await refreshAccount(account.id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        console.error(`[${label}] Failed for @${account.username}:`, message);
+        refreshAllProgress.errors.push({ username: account.username, error: message });
+      }
+      refreshAllProgress.completed++;
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(REFRESH_CONCURRENCY, accounts.length) },
+    () => worker(),
+  );
+  await Promise.all(workers);
+}
+
 export async function POST(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const accountId = searchParams.get("accountId");
@@ -64,17 +102,7 @@ export async function POST(request: NextRequest) {
     };
 
     (async () => {
-      for (const account of accounts) {
-        refreshAllProgress.current = account.username;
-        try {
-          await refreshAccount(account.id);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Unknown error";
-          console.error(`[refreshSelected] Failed for @${account.username}:`, message);
-          refreshAllProgress.errors.push({ username: account.username, error: message });
-        }
-        refreshAllProgress.completed++;
-      }
+      await runRefreshPool(accounts, "refreshSelected");
       // Recategorize so any newly-banned/healthy accounts move correctly
       refreshAllProgress.current = "Recategorizing scheduler...";
       try {
@@ -133,17 +161,7 @@ export async function POST(request: NextRequest) {
     };
 
     (async () => {
-      for (const account of accounts) {
-        refreshAllProgress.current = account.username;
-        try {
-          await refreshAccount(account.id);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Unknown error";
-          console.error(`[refreshAll] Failed for @${account.username}:`, message);
-          refreshAllProgress.errors.push({ username: account.username, error: message });
-        }
-        refreshAllProgress.completed++;
-      }
+      await runRefreshPool(accounts, "refreshAll");
       refreshAllProgress.current = "Recategorizing scheduler...";
       try {
         const result = await recategorizeScheduler();

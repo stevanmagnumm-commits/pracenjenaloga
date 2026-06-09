@@ -21,30 +21,6 @@ async function probeProfileMissing(username: string): Promise<"missing" | "alive
   }
 }
 
-async function confirmBannedViaProfile(username: string): Promise<boolean> {
-  const first = await probeProfileMissing(username);
-  if (first !== "missing") {
-    if (first === "inconclusive") {
-      console.warn(`[banCheck] @${username}: first probe inconclusive — leaving status untouched`);
-    }
-    return false;
-  }
-
-  // First probe says missing — wait, then re-check before committing. The
-  // delay matters: a burst-induced false negative usually clears within a
-  // few seconds once the burst subsides.
-  await new Promise((r) => setTimeout(r, 8000));
-  const second = await probeProfileMissing(username);
-
-  if (second === "missing") {
-    console.log(`[banCheck] @${username}: confirmed missing on both probes → banned`);
-    return true;
-  }
-
-  console.warn(`[banCheck] @${username}: first probe said missing but second said ${second} — likely API glitch, NOT marking banned`);
-  return false;
-}
-
 export interface RefreshProgress {
   total: number;
   completed: number;
@@ -266,23 +242,18 @@ export async function refreshAccount(accountId: string): Promise<void> {
     await upsertStubsAndSnapshots(accountId, stubs);
   }
 
-  // Reels endpoint returning 0 (or failing) is NOT enough to conclude banned —
-  // it's flaky enough at scale to produce many false positives on accounts
-  // that have substantial media history. Only confirm via the profile
-  // endpoint, which reliably returns "data not found" for vanished profiles.
-  let isBanned = false;
-  if ((fetchFailed || stubs.length === 0) && account.status !== "possibly_banned") {
-    isBanned = await confirmBannedViaProfile(account.username);
-  }
-
-  // Status is sticky: once marked "possibly_banned" it stays that way until manually cleared.
-  // Only upgrade to "possibly_banned"; never auto-clear back to "active".
+  // Ban detection is intentionally NOT done here anymore — it added an 8s
+  // profile re-probe per suspicious account and made bulk refresh crawl.
+  // Use the dedicated "Check bans" action instead. We DO opportunistically
+  // recover a previously-flagged account for free: if it now returns reels,
+  // it's clearly alive, so clear the sticky possibly_banned flag.
+  void fetchFailed;
   const updateData: { lastRefreshedAt: Date; status?: string } = {
     lastRefreshedAt: new Date(),
   };
-  if (isBanned && account.status !== "possibly_banned") {
-    updateData.status = "possibly_banned";
-    console.log(`[refreshAccount] @${account.username}: status → possibly_banned`);
+  if (stubs.length > 0 && account.status === "possibly_banned") {
+    updateData.status = "active";
+    console.log(`[refreshAccount] @${account.username}: returned reels → recovered to active`);
   }
 
   console.log(`[refreshAccount] @${account.username}: saved ${stubs.length} reels from stubs`);

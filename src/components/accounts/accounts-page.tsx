@@ -28,6 +28,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatNumber } from "@/lib/utils";
+import {
+  categoryForViews,
+  CATEGORY_META,
+  CATEGORY_ORDER,
+  type Category,
+} from "@/lib/category";
 
 interface GroupInfo {
   id: string;
@@ -82,6 +88,13 @@ interface GroupWithCount {
 type SortField = "totalViews" | "videosTracked" | "avgVideoViews" | "avgLast36Views" | "lastPosted" | "lastTracked";
 type SortDir = "asc" | "desc";
 
+// Performance category of an account, or null when it has no tracked data yet
+// (never refreshed / still importing) — those shouldn't be labeled SB.
+function accountCategory(a: AccountStat): Category | null {
+  if (a.videosTracked <= 0) return null;
+  return categoryForViews(a.avgLast36Views);
+}
+
 export function AccountsPage() {
   const router = useRouter();
   const [accounts, setAccounts] = useState<AccountStat[]>([]);
@@ -99,7 +112,7 @@ export function AccountsPage() {
 
   const [groups, setGroups] = useState<GroupWithCount[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string>("");
-  const [showOdlicni, setShowOdlicni] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState<Category | "">("");
   const [showBanned, setShowBanned] = useState(false);
   const [subGroupFilters, setSubGroupFilters] = useState<Set<string>>(new Set(["all"])); // "all", "noGroup", or group IDs
   const [showGroupDialog, setShowGroupDialog] = useState(false);
@@ -573,14 +586,14 @@ export function AccountsPage() {
     let filtered = accounts;
     
     // First apply main category filter
-    if (showOdlicni) {
-      filtered = filtered.filter((a) => a.avgLast36Views >= 800);
-    } else if (showBanned) {
+    if (showBanned) {
       filtered = filtered.filter((a) => a.status === "possibly_banned");
+    } else if (categoryFilter) {
+      filtered = filtered.filter((a) => accountCategory(a) === categoryFilter);
     }
     
-    // Then apply sub-group filter if Odlicni or Banned is active and not "all"
-    if ((showOdlicni || showBanned) && !subGroupFilters.has("all")) {
+    // Then apply sub-group filter if a category or Banned is active and not "all"
+    if ((categoryFilter || showBanned) && !subGroupFilters.has("all")) {
       filtered = filtered.filter((a) => {
         if (subGroupFilters.has("noGroup") && a.groups.length === 0) return true;
         if (a.groups.some((g) => subGroupFilters.has(g.id))) return true;
@@ -607,7 +620,7 @@ export function AccountsPage() {
         <div>
           <h1 className="text-2xl font-bold">All Accounts</h1>
           <p className="text-sm text-muted-foreground">
-            {displayedAccounts.length} accounts{showOdlicni ? " (Odlicni)" : showBanned ? " (Banned)" : selectedGroupId ? " in group" : " tracked"}
+            {displayedAccounts.length} accounts{categoryFilter ? ` (${CATEGORY_META[categoryFilter].label})` : showBanned ? " (Banned)" : selectedGroupId ? " in group" : " tracked"}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -685,27 +698,33 @@ export function AccountsPage() {
       {/* Group filter tabs */}
       <div className="flex flex-wrap gap-1.5">
         <button
-          onClick={() => { setSelectedGroupId(""); setShowOdlicni(false); setShowBanned(false); }}
+          onClick={() => { setSelectedGroupId(""); setCategoryFilter(""); setShowBanned(false); }}
           className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-            !selectedGroupId && !showOdlicni && !showBanned
+            !selectedGroupId && !categoryFilter && !showBanned
               ? "bg-primary/10 text-primary"
               : "bg-muted text-muted-foreground hover:text-foreground"
           }`}
         >
           All
         </button>
+        {CATEGORY_ORDER.map((cat) => {
+          const meta = CATEGORY_META[cat];
+          const count = accounts.filter((a) => accountCategory(a) === cat).length;
+          const active = categoryFilter === cat;
+          return (
+            <button
+              key={cat}
+              onClick={() => { setSelectedGroupId(""); setCategoryFilter(cat); setShowBanned(false); setSubGroupFilters(new Set(["all"])); }}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                active ? meta.activeCls : "bg-muted text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {meta.emoji} {meta.label} ({count})
+            </button>
+          );
+        })}
         <button
-          onClick={() => { setSelectedGroupId(""); setShowOdlicni(true); setShowBanned(false); setSubGroupFilters(new Set(["all"])); }}
-          className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-            showOdlicni
-              ? "bg-green-500/20 text-green-400"
-              : "bg-muted text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          ⭐ Odlicni ({accounts.filter((a) => a.avgLast36Views >= 800).length})
-        </button>
-        <button
-          onClick={() => { setSelectedGroupId(""); setShowOdlicni(false); setShowBanned(true); setSubGroupFilters(new Set(["all"])); }}
+          onClick={() => { setSelectedGroupId(""); setCategoryFilter(""); setShowBanned(true); setSubGroupFilters(new Set(["all"])); }}
           className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
             showBanned
               ? "bg-red-500/20 text-red-400"
@@ -717,7 +736,7 @@ export function AccountsPage() {
         {groups.map((g) => (
           <button
             key={g.id}
-            onClick={() => { setSelectedGroupId(g.id); setShowOdlicni(false); setShowBanned(false); }}
+            onClick={() => { setSelectedGroupId(g.id); setCategoryFilter(""); setShowBanned(false); }}
             className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
               selectedGroupId === g.id
                 ? "bg-primary/10 text-primary"
@@ -729,8 +748,8 @@ export function AccountsPage() {
         ))}
       </div>
 
-      {/* Sub-group filters for Odlicni/Banned */}
-      {(showOdlicni || showBanned) && (
+      {/* Sub-group filters for category/Banned views */}
+      {(categoryFilter || showBanned) && (
         <div className="flex flex-wrap items-center gap-3 pl-1">
           <span className="text-xs text-muted-foreground">Filter by group:</span>
           <label className="flex items-center gap-1.5 cursor-pointer">
@@ -939,7 +958,7 @@ export function AccountsPage() {
               {displayedAccounts.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">
-                    {showOdlicni ? "No accounts with 800+ avg views" : showBanned ? "No banned accounts" : selectedGroupId ? "No accounts in this group" : "No accounts tracked yet"}
+                    {categoryFilter ? `No accounts in ${CATEGORY_META[categoryFilter].label}` : showBanned ? "No banned accounts" : selectedGroupId ? "No accounts in this group" : "No accounts tracked yet"}
                   </TableCell>
                 </TableRow>
               ) : (
@@ -971,6 +990,16 @@ export function AccountsPage() {
                           >
                             @{account.username}
                           </a>
+                          {(() => {
+                            const cat = accountCategory(account);
+                            if (!cat) return null;
+                            const meta = CATEGORY_META[cat];
+                            return (
+                              <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${meta.badgeCls}`}>
+                                {meta.label}
+                              </span>
+                            );
+                          })()}
                           {account.importing && (
                             <span className="inline-flex items-center gap-0.5 rounded-full bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-400">
                               <Loader2 className="size-3 animate-spin" />

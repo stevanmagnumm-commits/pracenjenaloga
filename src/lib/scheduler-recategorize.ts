@@ -1,18 +1,7 @@
 import { prisma } from "@/lib/db";
+import { categoryForViews } from "@/lib/category";
 
-const CATEGORY_THRESHOLDS = [
-  { min: 800, category: "ODLIČAN" },
-  { min: 200, category: "DOBAR" },
-  { min: 50, category: "LOŠI" },
-  { min: 0, category: "SHADOWBANNED" },
-];
-
-function categoryFor(avgLast36Views: number): string {
-  for (const t of CATEGORY_THRESHOLDS) {
-    if (avgLast36Views >= t.min) return t.category;
-  }
-  return "SHADOWBANNED";
-}
+const categoryFor = categoryForViews;
 
 export interface RecategorizeResult {
   total: number;

@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import {
   ShieldCheck,
   ShieldAlert,
+  ShieldQuestion,
   Loader2,
   Play,
   Copy,
@@ -23,7 +24,7 @@ import {
 
 interface BanCheckResult {
   username: string;
-  status: "alive" | "banned";
+  status: "alive" | "banned" | "inconclusive";
 }
 
 interface CheckProgress {
@@ -32,11 +33,12 @@ interface CheckProgress {
   current: string | null;
   alive: number;
   banned: number;
+  inconclusive: number;
   running: boolean;
   results: BanCheckResult[];
 }
 
-type FilterMode = "all" | "alive" | "banned";
+type FilterMode = "all" | "alive" | "banned" | "inconclusive";
 
 export function IgBanCheckerPage() {
   const [input, setInput] = useState("");
@@ -150,7 +152,8 @@ export function IgBanCheckerPage() {
         <h1 className="text-2xl font-bold">Instagram Ban Checker</h1>
         <p className="text-sm text-muted-foreground mt-1">
           Paste usernames to check which accounts are banned or alive.
-          No API credits used — checks instagram.com directly.
+          A ban is only confirmed after two separate profile checks; transient
+          API errors are reported as &quot;inconclusive&quot; instead of banned.
         </p>
       </div>
 
@@ -223,6 +226,9 @@ export function IgBanCheckerPage() {
             <span className="flex items-center gap-1 text-red-500">
               <ShieldAlert className="size-4" /> {progress.banned} banned
             </span>
+            <span className="flex items-center gap-1 text-amber-500">
+              <ShieldQuestion className="size-4" /> {progress.inconclusive} inconclusive
+            </span>
           </div>
         </div>
       )}
@@ -237,6 +243,9 @@ export function IgBanCheckerPage() {
                 </span>
                 <span className="flex items-center gap-1 text-red-500">
                   <ShieldAlert className="size-4" /> {progress?.banned ?? 0} banned
+                </span>
+                <span className="flex items-center gap-1 text-amber-500">
+                  <ShieldQuestion className="size-4" /> {progress?.inconclusive ?? 0} inconclusive
                 </span>
                 <span className="text-muted-foreground">
                   / {results.length} total
@@ -261,7 +270,7 @@ export function IgBanCheckerPage() {
                     : `Copy ${selectedIds.size} username${selectedIds.size === 1 ? "" : "s"}`}
                 </Button>
               )}
-              {(["all", "alive", "banned"] as FilterMode[]).map((f) => (
+              {(["all", "alive", "banned", "inconclusive"] as FilterMode[]).map((f) => (
                 <Button
                   key={f}
                   variant={filter === f ? "default" : "outline"}
@@ -275,7 +284,9 @@ export function IgBanCheckerPage() {
                     ? "All"
                     : f === "alive"
                       ? `Alive (${progress?.alive ?? 0})`
-                      : `Banned (${progress?.banned ?? 0})`}
+                      : f === "banned"
+                        ? `Banned (${progress?.banned ?? 0})`
+                        : `Inconclusive (${progress?.inconclusive ?? 0})`}
                 </Button>
               ))}
             </div>
@@ -334,9 +345,13 @@ export function IgBanCheckerPage() {
                         <span className="inline-flex items-center gap-1 rounded-full bg-green-500/10 px-2 py-0.5 text-xs font-medium text-green-500">
                           <ShieldCheck className="size-3" /> Alive
                         </span>
-                      ) : (
+                      ) : result.status === "banned" ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-500">
                           <ShieldAlert className="size-3" /> Banned
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-500">
+                          <ShieldQuestion className="size-3" /> Inconclusive
                         </span>
                       )}
                     </TableCell>

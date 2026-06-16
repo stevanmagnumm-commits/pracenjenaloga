@@ -1,57 +1,69 @@
-import { prisma } from "./db";
-import { getMonthKey } from "./utils";
+import { fetchProfile } from "./instagram-api";
 
-const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY!;
-const RAPIDAPI_HOST =
-  process.env.RAPIDAPI_HOST || "instagram-scraper-stable-api.p.rapidapi.com";
-const BASE_URL = `https://${RAPIDAPI_HOST}`;
+// Delay between consecutive accounts (the profile endpoint itself already
+// retries/backs off on 429/5xx via apiPost).
 const RATE_DELAY = 1300;
+// When the first probe says "missing" we wait this long before re-checking,
+// to avoid burst-induced false positives — same approach as the All Accounts
+// "Check bans" action (see src/lib/refresh.ts).
+const RECHECK_DELAY = 8000;
 
-async function trackApiCall() {
-  const month = getMonthKey();
-  await prisma.apiUsage.upsert({
-    where: { month },
-    update: { callCount: { increment: 1 } },
-    create: { month, callCount: 1 },
-  });
-}
+export type IgBanStatus = "alive" | "banned" | "inconclusive";
 
 export interface IgBanCheckResult {
   username: string;
-  status: "alive" | "banned";
+  status: IgBanStatus;
 }
 
-async function checkProfile(username: string): Promise<IgBanCheckResult> {
+// Single profile probe. Distinguishes a real "account is gone" signal from a
+// transient API hiccup so the latter never gets misread as a ban.
+//   - alive        → profile fetched successfully
+//   - missing      → API explicitly says the profile/data was not found
+//   - inconclusive → network error, rate limit, 5xx, parse error, etc.
+async function probeProfileMissing(
+  username: string,
+): Promise<"missing" | "alive" | "inconclusive"> {
   try {
-    await trackApiCall();
-    const response = await fetch(`${BASE_URL}/ig_get_fb_profile_v3.php`, {
-      method: "POST",
-      headers: {
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": RAPIDAPI_HOST,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({ username_or_url: username }).toString(),
-    });
-
-    if (!response.ok) {
-      console.log(`[ig-ban-check] @${username} → HTTP ${response.status} → BANNED`);
-      return { username, status: "banned" };
+    await fetchProfile(username);
+    return "alive";
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("Profile not found") || msg.includes("data not found")) {
+      return "missing";
     }
+    return "inconclusive";
+  }
+}
 
-    const data = (await response.json()) as Record<string, unknown>;
+// Mirrors checkAccountBan in refresh.ts: only declare a ban after TWO separate
+// "missing" responses with a delay between them. Any transient failure resolves
+// to "inconclusive" (status unknown) instead of a false "banned".
+async function checkProfile(username: string): Promise<IgBanCheckResult> {
+  const first = await probeProfileMissing(username);
 
-    if (!data.pk && !data.id && !data.username) {
-      console.log(`[ig-ban-check] @${username} → empty response → BANNED`);
-      return { username, status: "banned" };
-    }
-
+  if (first === "alive") {
     console.log(`[ig-ban-check] @${username} → ALIVE`);
     return { username, status: "alive" };
-  } catch (err) {
-    console.error(`[ig-ban-check] @${username} → error:`, err);
+  }
+  if (first === "inconclusive") {
+    console.log(`[ig-ban-check] @${username} → INCONCLUSIVE (transient)`);
+    return { username, status: "inconclusive" };
+  }
+
+  // First probe says missing — re-check after a delay before committing to a ban.
+  await new Promise((r) => setTimeout(r, RECHECK_DELAY));
+  const second = await probeProfileMissing(username);
+
+  if (second === "missing") {
+    console.log(`[ig-ban-check] @${username} → BANNED (confirmed twice)`);
     return { username, status: "banned" };
   }
+  if (second === "alive") {
+    console.log(`[ig-ban-check] @${username} → ALIVE (recovered on recheck)`);
+    return { username, status: "alive" };
+  }
+  console.log(`[ig-ban-check] @${username} → INCONCLUSIVE (recheck transient)`);
+  return { username, status: "inconclusive" };
 }
 
 export interface IgBanCheckProgress {
@@ -60,6 +72,7 @@ export interface IgBanCheckProgress {
   current: string | null;
   alive: number;
   banned: number;
+  inconclusive: number;
   running: boolean;
   results: IgBanCheckResult[];
 }
@@ -70,6 +83,7 @@ let progress: IgBanCheckProgress = {
   current: null,
   alive: 0,
   banned: 0,
+  inconclusive: 0,
   running: false,
   results: [],
 };
@@ -103,6 +117,7 @@ export async function runIgBanCheck(usernames: string[]): Promise<void> {
     current: null,
     alive: 0,
     banned: 0,
+    inconclusive: 0,
     running: true,
     results: [],
   };
@@ -118,7 +133,8 @@ export async function runIgBanCheck(usernames: string[]): Promise<void> {
       progress.results.push(result);
 
       if (result.status === "alive") progress.alive++;
-      else progress.banned++;
+      else if (result.status === "banned") progress.banned++;
+      else progress.inconclusive++;
 
       progress.completed = i + 1;
 

@@ -39,10 +39,12 @@ export async function register() {
       console.log(`[scheduler] Heartbeat — ${new Date().toLocaleTimeString()}`);
     });
 
-    // Self-ping every 5 min to keep the dev server from idling
+    // Self-ping every 5 min to keep the dev server from idling. Use the
+    // instance's own PORT so a second instance never pings the first one.
+    const selfPort = process.env.PORT || "3000";
     setInterval(async () => {
       try {
-        await fetch("http://localhost:3000/api/snapchat/check");
+        await fetch(`http://localhost:${selfPort}/api/snapchat/check`);
       } catch {}
     }, 5 * 60 * 1000);
 

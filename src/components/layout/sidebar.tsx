@@ -136,18 +136,27 @@ export function Sidebar({ onTrackAccount }: SidebarProps) {
                     ? pathname === "/"
                     : pathname.startsWith(item.href);
 
+          const itemClassName = cn(
+            "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+            isActive
+              ? "bg-primary/10 text-primary"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground"
+          );
+
+          // /security sits behind a separate nginx basic-auth realm; use a real
+          // full-page navigation (not Next SPA fetch) so the browser shows the
+          // native auth prompt instead of silently failing the RSC fetch.
+          if (item.href === "/security") {
+            return (
+              <a key={item.href} href={item.href} className={itemClassName}>
+                <item.icon className="size-4" />
+                {item.label}
+              </a>
+            );
+          }
+
           return (
-            <Link
-              key={item.href}
-              href={item.href}
-              prefetch={item.href === "/security" ? false : undefined}
-              className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                isActive
-                  ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
-              )}
-            >
+            <Link key={item.href} href={item.href} className={itemClassName}>
               <item.icon className="size-4" />
               {item.label}
             </Link>

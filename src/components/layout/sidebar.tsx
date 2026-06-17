@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { LayoutDashboard, Film, Users, Plus, Instagram, AtSign, Music, Ghost, ShieldAlert, Calendar, UserPlus } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ENABLE_THREADS, ENABLE_TIKTOK, ENABLE_SNAPCHAT } from "@/lib/modules";
 
 const igNavItems = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
@@ -73,42 +74,48 @@ export function Sidebar({ onTrackAccount }: SidebarProps) {
           <Instagram className="size-3.5" />
           Instagram
         </Link>
-        <Link
-          href="/threads"
-          className={cn(
-            "flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
-            platform === "threads"
-              ? "bg-primary/10 text-primary"
-              : "text-muted-foreground hover:bg-accent hover:text-foreground"
-          )}
-        >
-          <AtSign className="size-3.5" />
-          Threads
-        </Link>
-        <Link
-          href="/tiktok"
-          className={cn(
-            "flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
-            platform === "tiktok"
-              ? "bg-primary/10 text-primary"
-              : "text-muted-foreground hover:bg-accent hover:text-foreground"
-          )}
-        >
-          <Music className="size-3.5" />
-          TikTok
-        </Link>
-        <Link
-          href="/snapchat"
-          className={cn(
-            "flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
-            platform === "snapchat"
-              ? "bg-primary/10 text-primary"
-              : "text-muted-foreground hover:bg-accent hover:text-foreground"
-          )}
-        >
-          <Ghost className="size-3.5" />
-          Snapchat
-        </Link>
+        {ENABLE_THREADS && (
+          <Link
+            href="/threads"
+            className={cn(
+              "flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+              platform === "threads"
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+            )}
+          >
+            <AtSign className="size-3.5" />
+            Threads
+          </Link>
+        )}
+        {ENABLE_TIKTOK && (
+          <Link
+            href="/tiktok"
+            className={cn(
+              "flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+              platform === "tiktok"
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+            )}
+          >
+            <Music className="size-3.5" />
+            TikTok
+          </Link>
+        )}
+        {ENABLE_SNAPCHAT && (
+          <Link
+            href="/snapchat"
+            className={cn(
+              "flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+              platform === "snapchat"
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+            )}
+          >
+            <Ghost className="size-3.5" />
+            Snapchat
+          </Link>
+        )}
       </div>
 
       <nav className="flex-1 space-y-1 p-3">

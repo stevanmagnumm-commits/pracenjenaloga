@@ -1,23 +1,29 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
     const cron = await import("node-cron");
-    const { runSnapchatCheck } = await import("@/lib/snapchat-scheduled-check");
+    const { ENABLE_SNAPCHAT } = await import("@/lib/modules");
     const { backupAllCreators } = await import("@/lib/creator-backup");
 
-    // Every 2 hours during active window: 10,12,14,16,18,20,22,0
-    // Morning report at 10:00 always sends full status
-    cron.default.schedule("0 10,12,14,16,18,20,22 * * *", async () => {
-      const hour = new Date().getHours();
-      const isMorningReport = hour === 10;
-      console.log(`[scheduler] Running ${isMorningReport ? "morning report" : "2-hour"} Snapchat check (${hour}:00)...`);
-      await runSnapchatCheck({ sendReportAlways: isMorningReport });
-    });
+    // Snapchat module is optional per deployment — skip all of its cron work
+    // (and the Telegram reports it sends) when disabled for this instance.
+    if (ENABLE_SNAPCHAT) {
+      const { runSnapchatCheck } = await import("@/lib/snapchat-scheduled-check");
 
-    // Midnight check (part of the active window)
-    cron.default.schedule("0 0 * * *", async () => {
-      console.log("[scheduler] Running midnight Snapchat check...");
-      await runSnapchatCheck();
-    });
+      // Every 2 hours during active window: 10,12,14,16,18,20,22,0
+      // Morning report at 10:00 always sends full status
+      cron.default.schedule("0 10,12,14,16,18,20,22 * * *", async () => {
+        const hour = new Date().getHours();
+        const isMorningReport = hour === 10;
+        console.log(`[scheduler] Running ${isMorningReport ? "morning report" : "2-hour"} Snapchat check (${hour}:00)...`);
+        await runSnapchatCheck({ sendReportAlways: isMorningReport });
+      });
+
+      // Midnight check (part of the active window)
+      cron.default.schedule("0 0 * * *", async () => {
+        console.log("[scheduler] Running midnight Snapchat check...");
+        await runSnapchatCheck();
+      });
+    }
 
     // Hourly creator-sheets backup → /backups/creators-<timestamp>.xlsx
     // Override location with BACKUP_DIR env (e.g. point at a mounted volume).

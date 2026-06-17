@@ -1,5 +1,6 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
+import { ENABLE_THREADS } from "@/lib/modules";
 import { ThreadsAccountDetail } from "@/components/threads/threads-account-detail";
 
 interface PageProps {
@@ -7,6 +8,7 @@ interface PageProps {
 }
 
 export default async function ThreadsAccountPage({ params }: PageProps) {
+  if (!ENABLE_THREADS) redirect("/");
   const { id } = await params;
 
   const account = await prisma.threadsAccount.findUnique({

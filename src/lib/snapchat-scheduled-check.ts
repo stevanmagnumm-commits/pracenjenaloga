@@ -32,11 +32,23 @@ export async function runSnapchatCheck(options?: { sendReportAlways?: boolean })
     const newlyBanned: string[] = [];
     let aliveCount = 0;
     let bannedCount = 0;
+    let errorCount = 0;
 
     await checkMultipleAccounts(
       accounts,
       async (accountId, result) => {
         const prevStatus = previousStatuses.get(accountId);
+
+        // "error" = untrustworthy result: keep the account's previous status,
+        // only note that we tried. Never overwrite with a wrong state.
+        if (result.status === "error") {
+          errorCount++;
+          await prisma.snapchatAccount.update({
+            where: { id: accountId },
+            data: { lastCheckedAt: new Date() },
+          });
+          return;
+        }
 
         await prisma.snapchatAccount.update({
           where: { id: accountId },
@@ -60,7 +72,7 @@ export async function runSnapchatCheck(options?: { sendReportAlways?: boolean })
       },
     );
 
-    console.log(`[snap-scheduler] Done: ${aliveCount} alive, ${bannedCount} banned, ${newlyBanned.length} newly banned`);
+    console.log(`[snap-scheduler] Done: ${aliveCount} alive, ${bannedCount} banned, ${errorCount} error, ${newlyBanned.length} newly banned`);
 
     if (newlyBanned.length > 0) {
       console.log(`[snap-scheduler] Sending ban alert for: ${newlyBanned.join(", ")}`);

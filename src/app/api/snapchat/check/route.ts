@@ -11,6 +11,7 @@ interface CheckProgress {
   current: string | null;
   alive: number;
   banned: number;
+  errors: number;
   running: boolean;
 }
 
@@ -20,6 +21,7 @@ let checkProgress: CheckProgress = {
   current: null,
   alive: 0,
   banned: 0,
+  errors: 0,
   running: false,
 };
 
@@ -53,6 +55,7 @@ export async function POST(request: NextRequest) {
     current: null,
     alive: 0,
     banned: 0,
+    errors: 0,
     running: true,
   };
 
@@ -64,6 +67,16 @@ export async function POST(request: NextRequest) {
         accounts,
         async (accountId, result) => {
           const prevStatus = previousStatuses.get(accountId);
+
+          // "error" = untrustworthy: keep previous status, just record attempt.
+          if (result.status === "error") {
+            checkProgress.errors++;
+            await prisma.snapchatAccount.update({
+              where: { id: accountId },
+              data: { lastCheckedAt: new Date() },
+            });
+            return;
+          }
 
           await prisma.snapchatAccount.update({
             where: { id: accountId },
@@ -94,7 +107,7 @@ export async function POST(request: NextRequest) {
         },
       );
 
-      console.log(`[api-check] Done: ${checkProgress.alive} alive, ${checkProgress.banned} banned, ${newlyBanned.length} newly banned`);
+      console.log(`[api-check] Done: ${checkProgress.alive} alive, ${checkProgress.banned} banned, ${checkProgress.errors} error, ${newlyBanned.length} newly banned`);
 
       if (newlyBanned.length > 0) {
         console.log(`[api-check] Sending ban alert for: ${newlyBanned.join(", ")}`);

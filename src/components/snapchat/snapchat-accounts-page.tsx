@@ -46,6 +46,7 @@ interface CheckProgress {
   current: string | null;
   alive: number;
   banned: number;
+  errors: number;
   running: boolean;
 }
 
@@ -412,6 +413,12 @@ export function SnapchatAccountsPage() {
               <span className="text-green-500">{checkProgress.alive} alive</span>
               {" · "}
               <span className="text-red-500">{checkProgress.banned} banned</span>
+              {(checkProgress.errors ?? 0) > 0 && (
+                <>
+                  {" · "}
+                  <span className="text-amber-500">{checkProgress.errors} error</span>
+                </>
+              )}
             </span>
           </div>
           <div className="h-2 w-full rounded-full bg-muted overflow-hidden">

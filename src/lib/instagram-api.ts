@@ -5,7 +5,10 @@ import type {
   NormalizedMedia,
 } from "@/types/instagram";
 
-const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY!;
+// IG-specific key override: lets an instance point Instagram at a different
+// RapidAPI subscription than TikTok/Threads (which keep using RAPIDAPI_KEY).
+// Falls back to RAPIDAPI_KEY when unset, so existing instances are unchanged.
+const RAPIDAPI_KEY = process.env.IG_RAPIDAPI_KEY || process.env.RAPIDAPI_KEY!;
 const RAPIDAPI_HOST = process.env.RAPIDAPI_HOST || "instagram-scraper-stable-api.p.rapidapi.com";
 const BASE_URL = `https://${RAPIDAPI_HOST}`;
 const RATE_DELAY = 800;

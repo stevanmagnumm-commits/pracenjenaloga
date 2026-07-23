@@ -10,6 +10,13 @@ const RAPIDAPI_HOST = process.env.RAPIDAPI_HOST || "instagram-scraper-stable-api
 const BASE_URL = `https://${RAPIDAPI_HOST}`;
 const RATE_DELAY = 800;
 
+// Which IG data provider this instance talks to:
+//   "stable"       → instagram-scraper-stable-api (POST endpoints, default)
+//   "mediacrawlers"→ instagram-api-fast-reliable-data-scraper (GET endpoints)
+// Both are normalized to the same NormalizedProfile / MediaStub shapes below so
+// the rest of the app is provider-agnostic.
+const IG_PROVIDER = (process.env.IG_PROVIDER || "stable").toLowerCase();
+
 async function trackApiCall() {
   const month = getMonthKey();
   await prisma.apiUsage.upsert({
@@ -79,6 +86,141 @@ async function apiGet(endpoint: string, retries = 5): Promise<unknown> {
   throw new Error("Unreachable");
 }
 
+// ---------------------------------------------------------------------------
+// mediacrawlers provider (instagram-api-fast-reliable-data-scraper)
+// GET endpoints; returns the raw parsed body plus HTTP status so callers can
+// distinguish a real "not found" (404) from a transient error / rate limit.
+// ---------------------------------------------------------------------------
+async function mcGet(
+  path: string,
+  retries = 5,
+): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    await trackApiCall();
+    const response = await fetch(`${BASE_URL}${path}`, {
+      method: "GET",
+      headers: {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": RAPIDAPI_HOST,
+      },
+    });
+    if (response.ok) {
+      return { ok: true, status: response.status, data: (await response.json()) as Record<string, unknown> };
+    }
+    if (RETRYABLE_STATUS.has(response.status) && attempt < retries) {
+      await retryWait(response.status, attempt, path, response.headers.get("retry-after"));
+      continue;
+    }
+    let data: Record<string, unknown> = {};
+    try {
+      data = (await response.json()) as Record<string, unknown>;
+    } catch {
+      data = { raw: await response.text().catch(() => "") };
+    }
+    return { ok: false, status: response.status, data };
+  }
+  return { ok: false, status: 0, data: {} };
+}
+
+function mcIsMissing(status: number, data: Record<string, unknown>): boolean {
+  if (status === 404) return true;
+  const err = String(data.error || data.message || "").toLowerCase();
+  return /couldn't find|couldn.t find|not found|does not exist|user not found/.test(err);
+}
+
+async function fetchProfileMediacrawlers(username: string): Promise<NormalizedProfile> {
+  const res = await mcGet(`/profile?username=${encodeURIComponent(username)}`);
+
+  if (!res.ok) {
+    // A genuine "account is gone" signal → let callers mark it banned/missing.
+    if (mcIsMissing(res.status, res.data)) {
+      throw new Error(`Profile not found: @${username} (${res.data.error || res.status})`);
+    }
+    // Rate limit (403 "reached requests limit"), 5xx, etc. → transient/unknown.
+    throw new Error(`API error ${res.status}: ${JSON.stringify(res.data)}`);
+  }
+
+  const user = res.data;
+  // Some providers return HTTP 200 with an { error } body for missing accounts.
+  if (user.error || (!user.pk && !user.username)) {
+    throw new Error(`Profile not found: @${username} (${user.error || "empty response"})`);
+  }
+
+  return {
+    igUserId: String(user.pk || user.id || ""),
+    username: (user.username as string) || username,
+    fullName: (user.full_name as string) || "",
+    bio: (user.biography as string) || "",
+    profilePicUrl: (user.profile_pic_url as string) || "",
+    isVerified: (user.is_verified as boolean) || false,
+    followerCount: (user.follower_count as number) || 0,
+    followingCount: (user.following_count as number) || 0,
+    mediaCount: (user.media_count as number) || 0,
+  };
+}
+
+async function fetchUserIdMediacrawlers(username: string): Promise<string> {
+  const res = await mcGet(`/user_id_by_username?username=${encodeURIComponent(username)}`);
+  if (!res.ok) {
+    if (mcIsMissing(res.status, res.data)) {
+      throw new Error(`Profile not found: @${username} (${res.data.error || res.status})`);
+    }
+    throw new Error(`API error ${res.status}: ${JSON.stringify(res.data)}`);
+  }
+  const uid = res.data.UserID ?? res.data.user_id ?? res.data.pk ?? res.data.id;
+  if (!uid) throw new Error(`user_id not found for @${username}`);
+  return String(uid);
+}
+
+async function fetchReelStubsMediacrawlers(username: string, maxStubs: number): Promise<MediaStub[]> {
+  const userId = await fetchUserIdMediacrawlers(username);
+  const byId = new Map<string, MediaStub>();
+  let maxId: string | undefined;
+
+  while (byId.size < maxStubs) {
+    let path = `/reels?user_id=${encodeURIComponent(userId)}`;
+    if (maxId) path += `&max_id=${encodeURIComponent(maxId)}`;
+
+    const res = await mcGet(path);
+    if (!res.ok) {
+      console.error(`[stubs:reels:mc] @${username} HTTP ${res.status}: ${JSON.stringify(res.data).slice(0, 160)}`);
+      break;
+    }
+
+    const data = ((res.data.data as Record<string, unknown>) || res.data) as Record<string, unknown>;
+    const items = (data.items as Array<Record<string, unknown>>) || [];
+
+    let newCount = 0;
+    for (const it of items) {
+      const m = ((it.media as Record<string, unknown>) || it) as Record<string, unknown>;
+      const pk = String(m.pk || m.id || "");
+      const code = (m.code as string) || "";
+      if (!pk || !code) continue;
+      if (byId.size >= maxStubs) break;
+      if (!byId.has(pk)) {
+        byId.set(pk, {
+          igMediaId: pk,
+          shortcode: code,
+          viewCount: (m.play_count as number) || (m.ig_play_count as number) || (m.view_count as number) || 0,
+          likeCount: (m.like_count as number) || 0,
+          commentCount: (m.comment_count as number) || 0,
+        });
+        newCount++;
+      }
+    }
+
+    const paging = ((data.paging_info as Record<string, unknown>) || data) as Record<string, unknown>;
+    const moreAvailable = paging.more_available as boolean | undefined;
+    maxId = (paging.max_id as string) || (paging.next_max_id as string) || undefined;
+
+    console.log(`[stubs:reels:mc] @${username} ${items.length} items, ${newCount} new, ${byId.size} total (max ${maxStubs})`);
+    if (!moreAvailable || !maxId || newCount === 0 || byId.size >= maxStubs) break;
+    await new Promise((r) => setTimeout(r, RATE_DELAY));
+  }
+
+  return Array.from(byId.values());
+}
+
 export function dateFromMediaPk(pk: string): Date | null {
   try {
     const ts = Number(BigInt(pk) >> BigInt(23)) + 1314220021721;
@@ -89,6 +231,10 @@ export function dateFromMediaPk(pk: string): Date | null {
 }
 
 export async function fetchProfile(username: string): Promise<NormalizedProfile> {
+  if (IG_PROVIDER === "mediacrawlers") {
+    return fetchProfileMediacrawlers(username);
+  }
+
   const user = await apiPost("/ig_get_fb_profile_v3.php", {
     username_or_url: username,
   }) as Record<string, unknown>;
@@ -164,6 +310,10 @@ async function fetchReelStubsPage(username: string, paginationToken?: string): P
 }
 
 export async function fetchAllStubs(username: string, maxStubs = 50): Promise<MediaStub[]> {
+  if (IG_PROVIDER === "mediacrawlers") {
+    return fetchReelStubsMediacrawlers(username, maxStubs);
+  }
+
   const byId = new Map<string, MediaStub>();
   let cursor: string | undefined;
 
@@ -202,6 +352,11 @@ export async function fetchLatestStubs(username: string, maxStubs = 36): Promise
 }
 
 async function fetchMediaDetailOnce(shortcode: string): Promise<NormalizedMedia | null> {
+  // The mediacrawlers /reels feed already carries view/like/comment counts, so
+  // per-media enrichment isn't needed there (and its media-detail endpoint has a
+  // different shape). Skip gracefully — callers treat null as "use stub values".
+  if (IG_PROVIDER === "mediacrawlers") return null;
+
   const item = await apiGet(`/get_media_data_v2.php?media_code=${encodeURIComponent(shortcode)}`) as Record<string, unknown>;
   if (item.error) return null;
 

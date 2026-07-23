@@ -2,20 +2,25 @@ import { fetchProfile } from "./instagram-api";
 
 const IG_PROVIDER = (process.env.IG_PROVIDER || "stable").toLowerCase();
 
-// The mediacrawlers provider returns a deterministic HTTP 404 ("user not found")
-// for missing accounts and surfaces rate limits / 5xx as separate transient
-// errors (mapped to "inconclusive", and internally retried with backoff), so a
-// "missing" signal is highly reliable. That lets us keep the same two-probe
-// safety net but with tighter delays. The stable provider (main tracker) keeps
-// its original, proven-good timings — untouched.
+// The mediacrawlers provider has a strict per-second rate limit. Under heavy
+// batch load it not only returns 429 (handled as "inconclusive"/retried) but can
+// also emit a RARE false 404 ("not found") for an account that is actually alive.
+// A single recheck can hit that false 404 twice in a row and mislabel a live
+// account as banned. To stay accurate we (a) pace requests a bit slower to reduce
+// the 429/false-404 pressure, and (b) require an EXTRA confirming probe before
+// declaring a ban. The stable provider (main tracker) keeps its original,
+// proven-good timings and two-probe confirmation — untouched.
 
 // Delay between consecutive accounts (the profile endpoint itself already
 // retries/backs off on 429/5xx).
-const RATE_DELAY = IG_PROVIDER === "mediacrawlers" ? 700 : 1300;
-// When the first probe says "missing" we wait this long before re-checking,
-// to avoid burst-induced false positives — same approach as the All Accounts
-// "Check bans" action (see src/lib/refresh.ts).
-const RECHECK_DELAY = IG_PROVIDER === "mediacrawlers" ? 3000 : 8000;
+const RATE_DELAY = IG_PROVIDER === "mediacrawlers" ? 1200 : 1300;
+// Wait between confirming probes when a "missing" is seen, so transient
+// rate-limit pressure can subside before we trust the signal.
+const RECHECK_DELAY = IG_PROVIDER === "mediacrawlers" ? 4000 : 8000;
+// How many consecutive "missing" probes are required to declare a ban.
+// mediacrawlers → 3 (defends against its rare false 404 under load).
+// stable        → 2 (unchanged, original behavior).
+const BAN_CONFIRMATIONS = IG_PROVIDER === "mediacrawlers" ? 3 : 2;
 
 export type IgBanStatus = "alive" | "banned" | "inconclusive";
 
@@ -44,35 +49,32 @@ async function probeProfileMissing(
   }
 }
 
-// Mirrors checkAccountBan in refresh.ts: only declare a ban after TWO separate
-// "missing" responses with a delay between them. Any transient failure resolves
-// to "inconclusive" (status unknown) instead of a false "banned".
+// Only declare a ban after BAN_CONFIRMATIONS consecutive "missing" responses,
+// spaced by RECHECK_DELAY. As soon as ANY probe says "alive" the account is
+// alive; any transient failure resolves to "inconclusive" (status unknown)
+// instead of a false "banned".
 async function checkProfile(username: string): Promise<IgBanCheckResult> {
-  const first = await probeProfileMissing(username);
+  for (let probe = 0; probe < BAN_CONFIRMATIONS; probe++) {
+    if (probe > 0) {
+      await new Promise((r) => setTimeout(r, RECHECK_DELAY));
+    }
+    const result = await probeProfileMissing(username);
 
-  if (first === "alive") {
-    console.log(`[ig-ban-check] @${username} → ALIVE`);
-    return { username, status: "alive" };
-  }
-  if (first === "inconclusive") {
-    console.log(`[ig-ban-check] @${username} → INCONCLUSIVE (transient)`);
-    return { username, status: "inconclusive" };
+    if (result === "alive") {
+      const note = probe === 0 ? "" : " (recovered on recheck)";
+      console.log(`[ig-ban-check] @${username} → ALIVE${note}`);
+      return { username, status: "alive" };
+    }
+    if (result === "inconclusive") {
+      const note = probe === 0 ? "(transient)" : "(recheck transient)";
+      console.log(`[ig-ban-check] @${username} → INCONCLUSIVE ${note}`);
+      return { username, status: "inconclusive" };
+    }
+    // result === "missing" → keep probing until we reach BAN_CONFIRMATIONS.
   }
 
-  // First probe says missing — re-check after a delay before committing to a ban.
-  await new Promise((r) => setTimeout(r, RECHECK_DELAY));
-  const second = await probeProfileMissing(username);
-
-  if (second === "missing") {
-    console.log(`[ig-ban-check] @${username} → BANNED (confirmed twice)`);
-    return { username, status: "banned" };
-  }
-  if (second === "alive") {
-    console.log(`[ig-ban-check] @${username} → ALIVE (recovered on recheck)`);
-    return { username, status: "alive" };
-  }
-  console.log(`[ig-ban-check] @${username} → INCONCLUSIVE (recheck transient)`);
-  return { username, status: "inconclusive" };
+  console.log(`[ig-ban-check] @${username} → BANNED (confirmed ${BAN_CONFIRMATIONS}x)`);
+  return { username, status: "banned" };
 }
 
 export interface IgBanCheckProgress {

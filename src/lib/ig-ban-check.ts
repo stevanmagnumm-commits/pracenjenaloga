@@ -1,12 +1,21 @@
 import { fetchProfile } from "./instagram-api";
 
+const IG_PROVIDER = (process.env.IG_PROVIDER || "stable").toLowerCase();
+
+// The mediacrawlers provider returns a deterministic HTTP 404 ("user not found")
+// for missing accounts and surfaces rate limits / 5xx as separate transient
+// errors (mapped to "inconclusive", and internally retried with backoff), so a
+// "missing" signal is highly reliable. That lets us keep the same two-probe
+// safety net but with tighter delays. The stable provider (main tracker) keeps
+// its original, proven-good timings — untouched.
+
 // Delay between consecutive accounts (the profile endpoint itself already
-// retries/backs off on 429/5xx via apiPost).
-const RATE_DELAY = 1300;
+// retries/backs off on 429/5xx).
+const RATE_DELAY = IG_PROVIDER === "mediacrawlers" ? 700 : 1300;
 // When the first probe says "missing" we wait this long before re-checking,
 // to avoid burst-induced false positives — same approach as the All Accounts
 // "Check bans" action (see src/lib/refresh.ts).
-const RECHECK_DELAY = 8000;
+const RECHECK_DELAY = IG_PROVIDER === "mediacrawlers" ? 3000 : 8000;
 
 export type IgBanStatus = "alive" | "banned" | "inconclusive";
 

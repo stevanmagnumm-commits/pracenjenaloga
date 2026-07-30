@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Film, Users, Plus, Instagram, AtSign, Music, Ghost, ShieldAlert, ShieldCheck, Calendar, UserPlus } from "lucide-react";
+import { LayoutDashboard, Film, Users, Plus, Instagram, AtSign, Music, Ghost, ShieldAlert, ShieldCheck, Calendar, UserPlus, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ENABLE_THREADS, ENABLE_TIKTOK, ENABLE_SNAPCHAT, ENABLE_SECURITY } from "@/lib/modules";
 
@@ -25,6 +25,7 @@ const threadsNavItems = [
 
 const tiktokNavItems = [
   { href: "/tiktok", label: "Top Videos", icon: Film },
+  { href: "/tiktok/downloader", label: "Downloader", icon: Download },
 ];
 
 const snapchatNavItems = [
@@ -127,7 +128,9 @@ export function Sidebar({ onTrackAccount }: SidebarProps) {
             platform === "snapchat"
               ? pathname.startsWith(item.href)
               : platform === "tiktok"
-                ? pathname.startsWith(item.href)
+                ? item.href === "/tiktok"
+                  ? pathname === "/tiktok"
+                  : pathname.startsWith(item.href)
                 : platform === "threads"
                   ? item.href === "/threads"
                     ? pathname === "/threads"

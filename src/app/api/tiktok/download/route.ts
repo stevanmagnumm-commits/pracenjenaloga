@@ -18,6 +18,11 @@ export interface ResolvedItem extends Partial<TikTokDownloadInfo> {
  *
  * Resolves each TikTok link to direct mp4 URLs. The actual bytes are then pulled
  * through GET /api/tiktok/download/file, which costs no extra API quota.
+ *
+ * Resolving a single link can take ~20s because the provider needs to be retried
+ * through its random empty responses, so the UI posts one link per request and
+ * renders results as they land — a whole batch in one request would blow past
+ * nginx's 60s proxy timeout.
  */
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => null)) as { urls?: string[] } | null;

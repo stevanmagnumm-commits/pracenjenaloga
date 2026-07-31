@@ -8,13 +8,16 @@ const RAPIDAPI_KEY = process.env.TIKTOK_RAPIDAPI_KEY || process.env.RAPIDAPI_KEY
 const TIKTOK_HOST = process.env.TIKTOK_RAPIDAPI_HOST || "tiktok-api23.p.rapidapi.com";
 const BASE_URL = `https://${TIKTOK_HOST}`;
 
-// The provider's /api/download/video endpoint is flaky: roughly two out of
-// three calls answer 204 with an empty body even for a perfectly valid video.
-// A short retry loop reliably turns that into a 200. Note each attempt — including
-// the empty ones — counts against the separate download-endpoint quota (500/day),
-// so keep the attempt count modest.
-const RESOLVE_ATTEMPTS = 6;
-const RESOLVE_RETRY_DELAY = 1200;
+// The provider's /api/download/video endpoint is flaky in a purely random way:
+// it answers 204 with an empty body for perfectly valid, public videos. Measured
+// on live links, the first 200 arrived on attempt 2, 6 and 11 respectively, so a
+// short retry loop is not enough — anything under ~15 attempts leaves working
+// videos reported as failures.
+//
+// Every attempt (including the empty ones) counts against the provider's separate
+// download-endpoint quota of 500/day, which works out to roughly 100 videos a day.
+const RESOLVE_ATTEMPTS = 15;
+const RESOLVE_RETRY_DELAY = 800;
 
 // Hosts we are willing to stream bytes from. The resolved links always live on
 // TikTok's own CDN; restricting to these suffixes keeps /file from being turned
@@ -180,7 +183,7 @@ export async function resolveTikTokDownload(rawUrl: string): Promise<TikTokDownl
 
   if (!payload?.play && !payload?.play_watermark) {
     throw new Error(
-      `Provider did not return a download link after ${RESOLVE_ATTEMPTS} attempts (video may be private, removed, or region-locked)`,
+      `No download link after ${RESOLVE_ATTEMPTS} attempts — provider was unresponsive, try this link again`,
     );
   }
 

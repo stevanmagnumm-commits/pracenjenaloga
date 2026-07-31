@@ -38,31 +38,66 @@ export function TikTokDownloaderPage() {
     .map((s) => s.trim())
     .filter(Boolean);
 
+  // One request per link: the provider often needs a dozen retries for a single
+  // video, so batching them all into one request would exceed the gateway timeout.
+  // Resolving one at a time also lets results appear as they finish.
   const handleResolve = async () => {
     if (urls.length === 0) return;
 
     setLoading(true);
     setItems([]);
-    setMessage(`Resolving ${urls.length} link(s)… this can take a few seconds each.`);
 
+    for (let i = 0; i < urls.length; i++) {
+      setMessage(`Resolving ${i + 1} of ${urls.length}…`);
+
+      let resolved: ResolvedItem;
+      try {
+        const res = await fetch("/api/tiktok/download", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ urls: [urls[i]] }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          resolved = { input: urls[i], error: data.error || `Request failed (${res.status})` };
+        } else {
+          resolved = data.results?.[0] || { input: urls[i], error: "No result returned" };
+          if (typeof data.quotaRemaining === "number") setQuota(data.quotaRemaining);
+        }
+      } catch {
+        resolved = { input: urls[i], error: "Network error — try this link again" };
+      }
+
+      setItems((prev) => [...prev, resolved]);
+    }
+
+    setMessage("");
+    setLoading(false);
+  };
+
+  const handleRetryOne = async (index: number) => {
+    const item = items[index];
+    setItems((prev) =>
+      prev.map((it, i) => (i === index ? { ...it, error: "Retrying…" } : it)),
+    );
     try {
       const res = await fetch("/api/tiktok/download", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ urls }),
+        body: JSON.stringify({ urls: [item.input] }),
       });
       const data = await res.json();
-      if (!res.ok) {
-        setMessage(data.error || "Request failed");
-        return;
-      }
-      setItems(data.results || []);
-      setQuota(typeof data.quotaRemaining === "number" ? data.quotaRemaining : null);
-      setMessage("");
+      const next: ResolvedItem = res.ok
+        ? data.results?.[0] || { input: item.input, error: "No result returned" }
+        : { input: item.input, error: data.error || `Request failed (${res.status})` };
+      if (typeof data.quotaRemaining === "number") setQuota(data.quotaRemaining);
+      setItems((prev) => prev.map((it, i) => (i === index ? next : it)));
     } catch {
-      setMessage("Network error. Please try again.");
-    } finally {
-      setLoading(false);
+      setItems((prev) =>
+        prev.map((it, i) =>
+          i === index ? { ...it, error: "Network error — try this link again" } : it,
+        ),
+      );
     }
   };
 
@@ -141,7 +176,8 @@ export function TikTokDownloaderPage() {
 
           {quota !== null && (
             <span className="text-xs text-muted-foreground">
-              Provider quota left today: <strong>{quota}</strong>
+              Provider quota left today: <strong>{quota}</strong>{" "}
+              <span className="opacity-70">(≈{Math.floor(quota / 5)} videos)</span>
             </span>
           )}
         </div>
@@ -192,7 +228,7 @@ export function TikTokDownloaderPage() {
                 )}
               </div>
 
-              {item.play && (
+              {item.play ? (
                 <a
                   href={fileHref(item, watermark)}
                   download={item.fileName}
@@ -200,6 +236,16 @@ export function TikTokDownloaderPage() {
                 >
                   Download
                 </a>
+              ) : (
+                item.error &&
+                item.error !== "Retrying…" && (
+                  <button
+                    onClick={() => handleRetryOne(idx)}
+                    className="flex-shrink-0 rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+                  >
+                    Retry
+                  </button>
+                )
               )}
             </div>
           ))}

@@ -94,15 +94,25 @@ export function extractAuthor(url: string): string {
   return m ? m[1] : "";
 }
 
-/** Metadata (title/cover/duration) — served off the cheap 200k/month quota. */
-async function fetchDetail(videoId: string): Promise<{
+interface TikTokDetail {
   title: string;
   author: string;
   coverUrl: string;
   duration: number;
-}> {
-  const fallback = { title: "", author: "", coverUrl: "", duration: 0 };
-  if (!videoId) return fallback;
+}
+
+const EMPTY_DETAIL: TikTokDetail = { title: "", author: "", coverUrl: "", duration: 0 };
+
+/**
+ * Metadata (title/cover/duration), served off the cheap 200k/month quota.
+ *
+ * Doubles as an existence check: returns `null` only when the API positively says
+ * there is no such video. That lets the caller reject dead links before spending
+ * anything from the scarce 500/day download quota. Transient trouble yields an
+ * empty detail instead, so a hiccup here never blocks a real download.
+ */
+async function fetchDetail(videoId: string): Promise<TikTokDetail | null> {
+  if (!videoId) return EMPTY_DETAIL;
 
   try {
     await trackApiCall();
@@ -112,13 +122,14 @@ async function fetchDetail(videoId: string): Promise<{
         "x-rapidapi-host": TIKTOK_HOST,
       },
     });
-    if (!res.ok) return fallback;
+    if (res.status === 404) return null;
+    if (!res.ok) return EMPTY_DETAIL;
 
     const data = (await res.json()) as {
       itemInfo?: { itemStruct?: Record<string, unknown> };
     };
     const item = data.itemInfo?.itemStruct;
-    if (!item) return fallback;
+    if (!item) return null;
 
     const video = (item.video as Record<string, unknown>) || {};
     const author = (item.author as Record<string, unknown>) || {};
@@ -129,7 +140,7 @@ async function fetchDetail(videoId: string): Promise<{
       duration: (video.duration as number) || 0,
     };
   } catch {
-    return fallback;
+    return EMPTY_DETAIL;
   }
 }
 
@@ -175,6 +186,12 @@ export async function resolveTikTokDownload(
     }
   }
 
+  // Confirm the video exists before touching the download quota — 15 retries
+  // against a dead link would otherwise cost 3% of the daily budget to learn nothing.
+  const videoId = extractVideoId(sourceUrl);
+  const detail = await fetchDetail(videoId);
+  if (detail === null) throw new Error("Video is unavailable or removed");
+
   let quotaRemaining: number | null = null;
   let payload: { play?: string; play_watermark?: string } | null = null;
 
@@ -218,9 +235,6 @@ export async function resolveTikTokDownload(
       `No download link after ${RESOLVE_ATTEMPTS} attempts — provider was unresponsive, try this link again`,
     );
   }
-
-  const videoId = extractVideoId(sourceUrl);
-  const detail = await fetchDetail(videoId);
 
   return {
     sourceUrl,

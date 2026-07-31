@@ -32,7 +32,8 @@ export async function GET(request: NextRequest) {
       return new NextResponse(stream, { status: 200, headers });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Download failed";
-      return NextResponse.json({ error: message }, { status: 502 });
+      const rejected = /^Not a (TikTok link|valid URL)$/.test(message);
+      return NextResponse.json({ error: message }, { status: rejected ? 400 : 502 });
     }
   }
 

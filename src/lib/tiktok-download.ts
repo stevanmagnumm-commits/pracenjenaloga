@@ -1,5 +1,6 @@
 import { prisma } from "./db";
 import { getMonthKey } from "./utils";
+import { isYtDlpAvailable, resolveViaYtDlp } from "./tiktok-ytdlp";
 
 // TikTok-specific key override, mirroring IG_RAPIDAPI_KEY: lets an instance
 // point TikTok at a different RapidAPI subscription than Instagram/Threads.
@@ -55,7 +56,9 @@ export interface TikTokDownloadInfo {
   title: string;
   coverUrl: string;
   duration: number;
-  /** Direct mp4, no watermark. */
+  /** Which backend produced this result — `ytdlp` costs no quota. */
+  source: "ytdlp" | "api";
+  /** Direct mp4, no watermark. Empty on the yt-dlp path, which streams instead. */
   play: string;
   /** Direct mp4 with the TikTok watermark burned in. */
   playWatermark: string;
@@ -131,16 +134,45 @@ async function fetchDetail(videoId: string): Promise<{
 }
 
 /**
- * Resolves a TikTok URL to directly downloadable mp4 links.
+ * Resolves a TikTok URL for download.
  *
- * The `hd=1` parameter is required — without it the endpoint answers 204 with an
- * empty body every single time.
+ * yt-dlp is tried first: it is free, unmetered, faster and yields the original
+ * 1080p file. The RapidAPI provider is the fallback for when yt-dlp is missing or
+ * TikTok has changed something the installed binary can't parse yet — and it is
+ * the only path that can produce a watermarked file.
  */
-export async function resolveTikTokDownload(rawUrl: string): Promise<TikTokDownloadInfo> {
+export async function resolveTikTokDownload(
+  rawUrl: string,
+  opts: { watermark?: boolean } = {},
+): Promise<TikTokDownloadInfo> {
   const sourceUrl = normalizeTikTokUrl(rawUrl);
   if (!sourceUrl) throw new Error("Empty URL");
   if (!/tiktok\.com/i.test(sourceUrl)) {
     throw new Error("Not a TikTok link");
+  }
+
+  if (!opts.watermark && (await isYtDlpAvailable())) {
+    try {
+      const info = await resolveViaYtDlp(sourceUrl);
+      return {
+        sourceUrl,
+        videoId: info.videoId || extractVideoId(sourceUrl),
+        author: info.author || extractAuthor(sourceUrl),
+        title: info.title,
+        coverUrl: info.coverUrl,
+        duration: info.duration,
+        source: "ytdlp",
+        play: "",
+        playWatermark: "",
+        quotaRemaining: null,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // A private or deleted video is a dead end — the provider can't help either,
+      // and falling through would waste 15 download-quota calls confirming it.
+      if (/private|unavailable|removed/i.test(message)) throw err;
+      console.warn(`[tiktok:download] yt-dlp failed for ${sourceUrl} (${message}), using API`);
+    }
   }
 
   let quotaRemaining: number | null = null;
@@ -197,6 +229,7 @@ export async function resolveTikTokDownload(rawUrl: string): Promise<TikTokDownl
     title: detail.title,
     coverUrl: detail.coverUrl,
     duration: detail.duration,
+    source: "api",
     play: payload.play || payload.play_watermark || "",
     playWatermark: payload.play_watermark || "",
     quotaRemaining,

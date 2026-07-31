@@ -1,22 +1,41 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAllowedCdnUrl } from "@/lib/tiktok-download";
+import { streamViaYtDlp } from "@/lib/tiktok-ytdlp";
 
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/tiktok/download/file?src=<cdn url>&name=<file name>
+ * GET /api/tiktok/download/file
  *
- * Streams an already-resolved TikTok CDN mp4 back to the browser as an
- * attachment. Going through the server (rather than linking straight to the CDN)
- * lets us set a proper filename and avoids the browser hitting CDN links that
- * only answer to server-side requests. Costs no RapidAPI quota.
+ * Two ways in, matching the two resolvers:
+ *   ?url=<tiktok page url>  → yt-dlp streams the mp4 straight through (default)
+ *   ?src=<tiktok cdn url>   → proxied fetch, used by the RapidAPI fallback
+ *
+ * Both inputs are whitelisted by host so this can't be turned into an open proxy.
  */
 export async function GET(request: NextRequest) {
+  const pageUrl = request.nextUrl.searchParams.get("url") || "";
   const src = request.nextUrl.searchParams.get("src") || "";
   const name = request.nextUrl.searchParams.get("name") || "tiktok.mp4";
 
-  // `src` comes back from the client, so re-validate it here: only TikTok CDN
-  // hosts are streamable, otherwise this route would be an open proxy.
+  const headers = new Headers({
+    "Content-Type": "video/mp4",
+    "Content-Disposition": contentDisposition(name),
+    "Cache-Control": "no-store",
+  });
+
+  if (pageUrl) {
+    try {
+      // Length is unknown up front here, so the browser shows an indeterminate
+      // progress bar. Worth it to avoid buffering the whole file server-side.
+      const stream = await streamViaYtDlp(pageUrl);
+      return new NextResponse(stream, { status: 200, headers });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Download failed";
+      return NextResponse.json({ error: message }, { status: 502 });
+    }
+  }
+
   if (!isAllowedCdnUrl(src)) {
     return NextResponse.json({ error: "Invalid or disallowed source URL" }, { status: 400 });
   }
@@ -30,20 +49,17 @@ export async function GET(request: NextRequest) {
   });
 
   if (!upstream.ok || !upstream.body) {
-    return NextResponse.json(
-      { error: `Upstream returned ${upstream.status}` },
-      { status: 502 },
-    );
+    return NextResponse.json({ error: `Upstream returned ${upstream.status}` }, { status: 502 });
   }
 
-  const safeName = name.replace(/["\\\r\n]/g, "").slice(0, 150) || "tiktok.mp4";
-  const headers = new Headers({
-    "Content-Type": upstream.headers.get("content-type") || "video/mp4",
-    "Content-Disposition": `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,
-    "Cache-Control": "no-store",
-  });
+  headers.set("Content-Type", upstream.headers.get("content-type") || "video/mp4");
   const len = upstream.headers.get("content-length");
   if (len) headers.set("Content-Length", len);
 
   return new NextResponse(upstream.body, { status: 200, headers });
+}
+
+function contentDisposition(name: string): string {
+  const safe = name.replace(/["\\\r\n]/g, "").slice(0, 150) || "tiktok.mp4";
+  return `attachment; filename="${safe}"; filename*=UTF-8''${encodeURIComponent(safe)}`;
 }

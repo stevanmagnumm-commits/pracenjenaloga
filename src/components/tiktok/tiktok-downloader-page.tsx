@@ -10,20 +10,13 @@ interface ResolvedItem {
   title?: string;
   coverUrl?: string;
   duration?: number;
-  play?: string;
-  playWatermark?: string;
+  source?: "ytdlp" | "api";
   fileName?: string;
+  downloadUrl?: string;
   error?: string;
 }
 
 const MAX_URLS = 20;
-
-function fileHref(item: ResolvedItem, watermark: boolean): string {
-  const src = watermark && item.playWatermark ? item.playWatermark : item.play;
-  if (!src) return "#";
-  const name = item.fileName || "tiktok.mp4";
-  return `/api/tiktok/download/file?src=${encodeURIComponent(src)}&name=${encodeURIComponent(name)}`;
-}
 
 export function TikTokDownloaderPage() {
   const [input, setInput] = useState("");
@@ -38,9 +31,27 @@ export function TikTokDownloaderPage() {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  // One request per link: the provider often needs a dozen retries for a single
-  // video, so batching them all into one request would exceed the gateway timeout.
-  // Resolving one at a time also lets results appear as they finish.
+  // One request per link, so results appear as they finish and no single request
+  // can outlive the gateway timeout — on the RapidAPI fallback a link may need a
+  // dozen retries and take ~20s on its own.
+  const resolveOne = async (url: string): Promise<ResolvedItem> => {
+    try {
+      const res = await fetch("/api/tiktok/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ urls: [url], watermark }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return { input: url, error: data.error || `Request failed (${res.status})` };
+      }
+      if (typeof data.quotaRemaining === "number") setQuota(data.quotaRemaining);
+      return data.results?.[0] || { input: url, error: "No result returned" };
+    } catch {
+      return { input: url, error: "Network error — try this link again" };
+    }
+  };
+
   const handleResolve = async () => {
     if (urls.length === 0) return;
 
@@ -49,25 +60,7 @@ export function TikTokDownloaderPage() {
 
     for (let i = 0; i < urls.length; i++) {
       setMessage(`Resolving ${i + 1} of ${urls.length}…`);
-
-      let resolved: ResolvedItem;
-      try {
-        const res = await fetch("/api/tiktok/download", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ urls: [urls[i]] }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          resolved = { input: urls[i], error: data.error || `Request failed (${res.status})` };
-        } else {
-          resolved = data.results?.[0] || { input: urls[i], error: "No result returned" };
-          if (typeof data.quotaRemaining === "number") setQuota(data.quotaRemaining);
-        }
-      } catch {
-        resolved = { input: urls[i], error: "Network error — try this link again" };
-      }
-
+      const resolved = await resolveOne(urls[i]);
       setItems((prev) => [...prev, resolved]);
     }
 
@@ -76,38 +69,19 @@ export function TikTokDownloaderPage() {
   };
 
   const handleRetryOne = async (index: number) => {
-    const item = items[index];
-    setItems((prev) =>
-      prev.map((it, i) => (i === index ? { ...it, error: "Retrying…" } : it)),
-    );
-    try {
-      const res = await fetch("/api/tiktok/download", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ urls: [item.input] }),
-      });
-      const data = await res.json();
-      const next: ResolvedItem = res.ok
-        ? data.results?.[0] || { input: item.input, error: "No result returned" }
-        : { input: item.input, error: data.error || `Request failed (${res.status})` };
-      if (typeof data.quotaRemaining === "number") setQuota(data.quotaRemaining);
-      setItems((prev) => prev.map((it, i) => (i === index ? next : it)));
-    } catch {
-      setItems((prev) =>
-        prev.map((it, i) =>
-          i === index ? { ...it, error: "Network error — try this link again" } : it,
-        ),
-      );
-    }
+    const url = items[index].input;
+    setItems((prev) => prev.map((it, i) => (i === index ? { ...it, error: "Retrying…" } : it)));
+    const next = await resolveOne(url);
+    setItems((prev) => prev.map((it, i) => (i === index ? next : it)));
   };
 
   // Browsers throttle simultaneous downloads, so kick them off one at a time.
   const handleDownloadAll = () => {
-    const ready = items.filter((i) => i.play);
+    const ready = items.filter((i) => i.downloadUrl);
     ready.forEach((item, idx) => {
       setTimeout(() => {
         const a = document.createElement("a");
-        a.href = fileHref(item, watermark);
+        a.href = item.downloadUrl!;
         a.download = item.fileName || "tiktok.mp4";
         document.body.appendChild(a);
         a.click();
@@ -116,14 +90,14 @@ export function TikTokDownloaderPage() {
     });
   };
 
-  const readyCount = items.filter((i) => i.play).length;
+  const readyCount = items.filter((i) => i.downloadUrl).length;
 
   return (
     <div className="space-y-6 p-6">
       <div>
         <h1 className="text-2xl font-bold">TikTok Downloader</h1>
         <p className="text-sm text-muted-foreground">
-          Paste TikTok video links to download the MP4 files — without watermark by default
+          Paste TikTok video links to download the MP4 files — highest quality, no watermark
         </p>
       </div>
 
@@ -163,6 +137,7 @@ export function TikTokDownloaderPage() {
               className="size-4 rounded border-border"
             />
             Include watermark
+            <span className="text-xs text-muted-foreground">(uses API quota)</span>
           </label>
 
           {readyCount > 1 && (
@@ -220,6 +195,11 @@ export function TikTokDownloaderPage() {
                           {formatDuration(item.duration)}
                         </span>
                       ) : null}
+                      {item.source === "api" && (
+                        <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs font-normal text-muted-foreground">
+                          via API
+                        </span>
+                      )}
                     </p>
                     <p className="mt-0.5 line-clamp-2 text-sm text-muted-foreground">
                       {item.title || "(no caption)"}
@@ -228,9 +208,9 @@ export function TikTokDownloaderPage() {
                 )}
               </div>
 
-              {item.play ? (
+              {item.downloadUrl ? (
                 <a
-                  href={fileHref(item, watermark)}
+                  href={item.downloadUrl}
                   download={item.fileName}
                   className="flex-shrink-0 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
                 >

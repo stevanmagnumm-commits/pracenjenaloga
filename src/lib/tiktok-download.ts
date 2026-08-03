@@ -20,6 +20,9 @@ const BASE_URL = `https://${TIKTOK_HOST}`;
 const RESOLVE_ATTEMPTS = 15;
 const RESOLVE_RETRY_DELAY = 800;
 
+// The metadata endpoint hiccups far less often (~5%), so it needs far fewer tries.
+const DETAIL_ATTEMPTS = 3;
+
 // Hosts we are willing to stream bytes from. The resolved links always live on
 // TikTok's own CDN; restricting to these suffixes keeps /file from being turned
 // into an open proxy.
@@ -114,34 +117,45 @@ const EMPTY_DETAIL: TikTokDetail = { title: "", author: "", coverUrl: "", durati
 async function fetchDetail(videoId: string): Promise<TikTokDetail | null> {
   if (!videoId) return EMPTY_DETAIL;
 
-  try {
-    await trackApiCall();
-    const res = await fetch(`${BASE_URL}/api/post/detail?videoId=${encodeURIComponent(videoId)}`, {
-      headers: {
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": TIKTOK_HOST,
-      },
-    });
-    if (res.status === 404) return null;
-    if (!res.ok) return EMPTY_DETAIL;
+  // ~5% of calls answer 204 with an empty body regardless of input, so an empty
+  // response says nothing about whether the video exists — retry before believing it.
+  for (let attempt = 0; attempt < DETAIL_ATTEMPTS; attempt++) {
+    try {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, RESOLVE_RETRY_DELAY));
+      await trackApiCall();
+      const res = await fetch(`${BASE_URL}/api/post/detail?videoId=${encodeURIComponent(videoId)}`, {
+        headers: {
+          "x-rapidapi-key": RAPIDAPI_KEY,
+          "x-rapidapi-host": TIKTOK_HOST,
+        },
+      });
+      if (res.status === 404) return null;
+      if (!res.ok) continue;
 
-    const data = (await res.json()) as {
-      itemInfo?: { itemStruct?: Record<string, unknown> };
-    };
-    const item = data.itemInfo?.itemStruct;
-    if (!item) return null;
+      const text = await res.text();
+      if (!text.trim()) continue;
 
-    const video = (item.video as Record<string, unknown>) || {};
-    const author = (item.author as Record<string, unknown>) || {};
-    return {
-      title: (item.desc as string) || "",
-      author: (author.uniqueId as string) || "",
-      coverUrl: (video.cover as string) || "",
-      duration: (video.duration as number) || 0,
-    };
-  } catch {
-    return EMPTY_DETAIL;
+      const data = JSON.parse(text) as {
+        itemInfo?: { itemStruct?: Record<string, unknown> };
+      };
+      const item = data.itemInfo?.itemStruct;
+      if (!item) return null;
+
+      const video = (item.video as Record<string, unknown>) || {};
+      const author = (item.author as Record<string, unknown>) || {};
+      return {
+        title: (item.desc as string) || "",
+        author: (author.uniqueId as string) || "",
+        coverUrl: (video.cover as string) || "",
+        duration: (video.duration as number) || 0,
+      };
+    } catch {
+      // network hiccup or malformed body — fall through to the next attempt
+    }
   }
+
+  // Never got a usable answer, so we can't claim the video is missing.
+  return EMPTY_DETAIL;
 }
 
 /**

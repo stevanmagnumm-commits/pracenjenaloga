@@ -5,6 +5,7 @@ const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY!;
 const TIKTOK_HOST = process.env.TIKTOK_RAPIDAPI_HOST || "tiktok-api23.p.rapidapi.com";
 const BASE_URL = `https://${TIKTOK_HOST}`;
 const RATE_DELAY = 1300;
+const RETRY_DELAY = 1000;
 
 async function trackApiCall() {
   const month = getMonthKey();
@@ -15,32 +16,64 @@ async function trackApiCall() {
   });
 }
 
-async function tiktokGet(endpoint: string, params: Record<string, string>, retries = 2): Promise<unknown> {
+/**
+ * GET against the TikTok provider, retrying the failures that are just noise.
+ *
+ * About 5% of calls come back 204 with an empty body for perfectly valid input —
+ * the same random flakiness the download endpoint shows. That is harmless on its
+ * own, but a single top-videos lookup makes up to 6 calls, so without retries
+ * roughly a quarter of usernames used to fail outright. The monthly quota is
+ * 200k, so retrying costs nothing worth worrying about.
+ */
+async function tiktokGet(endpoint: string, params: Record<string, string>, retries = 4): Promise<unknown> {
   const url = new URL(`${BASE_URL}${endpoint}`);
   for (const [k, v] of Object.entries(params)) {
     url.searchParams.set(k, v);
   }
 
+  let lastIssue = "";
+
   for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) {
+      console.log(`[tiktokGet] ${lastIssue} on ${endpoint}, retry ${attempt}/${retries}...`);
+      await new Promise((r) => setTimeout(r, RETRY_DELAY));
+    }
+
     await trackApiCall();
-    const response = await fetch(url.toString(), {
-      method: "GET",
-      headers: {
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": TIKTOK_HOST,
-        "Content-Type": "application/json",
-      },
-    });
-    if (response.ok) return response.json();
-    if (response.status === 504 && attempt < retries) {
-      console.log(`[tiktokGet] 504 timeout on ${endpoint}, retry ${attempt + 1}/${retries}...`);
-      await new Promise((r) => setTimeout(r, 3000));
+
+    let response: Response;
+    try {
+      response = await fetch(url.toString(), {
+        method: "GET",
+        headers: {
+          "x-rapidapi-key": RAPIDAPI_KEY,
+          "x-rapidapi-host": TIKTOK_HOST,
+          "Content-Type": "application/json",
+        },
+      });
+    } catch {
+      lastIssue = "network error";
       continue;
     }
+
+    if (response.ok) {
+      const text = await response.text();
+      if (text.trim()) return JSON.parse(text);
+      // 204 / empty body → provider hiccup, not an answer about the user.
+      lastIssue = `empty ${response.status} body`;
+      continue;
+    }
+
+    if (response.status === 504) {
+      lastIssue = "504 timeout";
+      continue;
+    }
+
     const text = await response.text();
     throw new Error(`TikTok API error ${response.status}: ${text}`);
   }
-  throw new Error("Unreachable");
+
+  throw new Error(`TikTok API kept returning ${lastIssue} after ${retries} retries`);
 }
 
 export interface TikTokUserInfo {

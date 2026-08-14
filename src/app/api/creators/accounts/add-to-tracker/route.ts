@@ -2,8 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { initialImport } from "@/lib/refresh";
 import { addToSchedulerWithExpiryDate } from "@/lib/scheduler-add";
+import { isAdmin } from "@/lib/creator-auth";
 
 export const dynamic = "force-dynamic";
+
+// Admin-only: importing into the shared Tracker is an owner action, and it
+// burns RapidAPI quota. nginx already guards this path with basic auth; the
+// check below means the rule survives an nginx config change too.
+const forbidden = () =>
+  NextResponse.json({ error: "Not authorized" }, { status: 403 });
 
 interface BulkProgress {
   total: number;
@@ -34,6 +41,8 @@ let progress: BulkProgress = {
  *   4. Stamp scheduledBy/scheduledAt/postsLeft back onto the CreatorAccount row
  */
 export async function POST(request: NextRequest) {
+  if (!(await isAdmin())) return forbidden();
+
   if (progress.running) {
     return NextResponse.json(
       { error: "Add-to-tracker already running", progress },
@@ -152,5 +161,6 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET() {
+  if (!(await isAdmin())) return forbidden();
   return NextResponse.json(progress);
 }

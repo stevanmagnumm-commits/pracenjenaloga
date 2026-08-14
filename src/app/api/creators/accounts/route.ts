@@ -1,16 +1,54 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { canAccessCreator, isAdmin } from "@/lib/creator-auth";
 
 export const dynamic = "force-dynamic";
+
+// ---------------------------------------------------------------------------
+// Authorization
+//
+// nginx serves this path WITHOUT basic auth — it has to, because the shared
+// creator sheets at /creators/<slug> are public URLs and need it. That makes
+// this file the only thing standing between the open internet and every
+// creator's rows, so every handler below authorizes explicitly:
+//
+//   admin             → all creators
+//   logged-in creator → only their own creatorId
+//   anonymous         → nothing
+// ---------------------------------------------------------------------------
+const forbidden = () =>
+  NextResponse.json({ error: "Not authorized" }, { status: 403 });
+
+/**
+ * Verify the caller may touch every one of the given sheet rows. Row ids are
+ * opaque cuids, but without this a logged-in creator could edit or delete
+ * another creator's rows by passing their ids.
+ */
+async function mayTouchRows(ids: string[]): Promise<boolean> {
+  if (ids.length === 0) return false;
+  const rows = await prisma.creatorAccount.findMany({
+    where: { id: { in: ids } },
+    select: { creatorId: true },
+  });
+  if (rows.length === 0) return false;
+  for (const creatorId of new Set(rows.map((r) => r.creatorId))) {
+    if (!(await canAccessCreator(creatorId))) return false;
+  }
+  return true;
+}
 
 /**
  * GET /api/creators/accounts?creatorId=XYZ
  * Returns all accounts under a given creator, joined with whether each
  * username is already in the tracker + scheduler.
+ *
+ * Omitting creatorId returns every creator's rows and is therefore admin-only.
  */
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const creatorId = searchParams.get("creatorId");
+
+  if (!(await canAccessCreator(creatorId))) return forbidden();
 
   const where = creatorId ? { creatorId } : {};
   const accounts = await prisma.creatorAccount.findMany({
@@ -78,6 +116,8 @@ export async function POST(request: NextRequest) {
   if (!creatorId) {
     return NextResponse.json({ error: "creatorId is required" }, { status: 400 });
   }
+
+  if (!(await canAccessCreator(creatorId))) return forbidden();
 
   if (bulkRows && Array.isArray(bulkRows) && bulkRows.length > 0) {
     const created: typeof bulkRows = [];
@@ -211,6 +251,8 @@ export async function PATCH(request: NextRequest) {
   const id = searchParams.get("id");
   if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
 
+  if (!(await mayTouchRows([id]))) return forbidden();
+
   const body = await request.json();
   const {
     username,
@@ -237,6 +279,10 @@ export async function PATCH(request: NextRequest) {
     expiryDate?: string | null;
     creatorId?: string;
   };
+
+  // Reassigning a row to a different creator moves data between sheets —
+  // only the admin may do that, never a creator editing their own sheet.
+  if (creatorId !== undefined && !(await isAdmin())) return forbidden();
 
   try {
     const updated = await prisma.creatorAccount.update({
@@ -276,6 +322,7 @@ export async function DELETE(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get("id");
   if (id) {
+    if (!(await mayTouchRows([id]))) return forbidden();
     await prisma.creatorAccount.delete({ where: { id } });
     return NextResponse.json({ success: true });
   }
@@ -284,6 +331,7 @@ export async function DELETE(request: NextRequest) {
   if (!Array.isArray(ids) || ids.length === 0) {
     return NextResponse.json({ error: "Provide ?id=... or { ids: [...] }" }, { status: 400 });
   }
+  if (!(await mayTouchRows(ids))) return forbidden();
   const result = await prisma.creatorAccount.deleteMany({
     where: { id: { in: ids } },
   });

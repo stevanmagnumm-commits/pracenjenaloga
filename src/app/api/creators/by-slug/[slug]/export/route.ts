@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import * as XLSX from "xlsx";
+import { isAdmin } from "@/lib/creator-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -14,8 +15,18 @@ function dateStr(d: Date | null | undefined): string {
  * Downloads the creator's entire sheet as an XLSX file. Separator rows are
  * emitted as visually distinct "=== day ===" rows so the day-grouping the
  * user worked with is preserved in the backup.
+ *
+ * ADMIN ONLY. nginx leaves the whole /api/creators/by-slug/ prefix open for the
+ * shared sheets, and this dump carries every column — passwords, 2FA, proxies —
+ * for the entire sheet in one file. The UI already hides the button from
+ * shared-link visitors (creator-sheet.tsx renders "view-only" instead); this is
+ * the matching server-side rule.
  */
 export async function GET(_request: NextRequest, context: { params: Promise<{ slug: string }> }) {
+  if (!(await isAdmin())) {
+    return NextResponse.json({ error: "Not authorized" }, { status: 403 });
+  }
+
   const { slug } = await context.params;
   const creator = await prisma.creator.findUnique({
     where: { slug },

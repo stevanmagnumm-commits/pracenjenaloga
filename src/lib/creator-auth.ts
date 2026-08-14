@@ -6,9 +6,21 @@ import { cookies } from "next/headers";
 const SECRET = (() => {
   const fromEnv = process.env.SESSION_SECRET;
   if (fromEnv && fromEnv.length >= 16) return fromEnv;
+  if (process.env.NODE_ENV === "production") {
+    // Every session token would be forgeable by anyone reading this source.
+    console.error(
+      "[creator-auth] SESSION_SECRET is missing/too short in production — " +
+        "session cookies are signed with the public dev fallback. Set it in .env and restart.",
+    );
+  }
   // Stable across process restarts on the same machine
   return "dev-session-secret-please-set-SESSION_SECRET-in-production-aaaa";
 })();
+
+// Session cookies must never travel over plain HTTP in production. Both live
+// sites are HTTPS-only (nginx 301s :80), so this costs nothing there, and stays
+// off locally where dev runs on http://localhost.
+export const COOKIE_SECURE = process.env.NODE_ENV === "production";
 
 export const ADMIN_COOKIE = "creator_admin_session";
 export const ADMIN_COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
@@ -75,6 +87,45 @@ export async function getCurrentRole(creatorId?: string): Promise<"admin" | "cre
     }
   }
   return null;
+}
+
+/**
+ * True only for the panel owner (admin session cookie present and valid).
+ *
+ * The admin cookie is issued by GET /api/creators, which sits behind nginx
+ * basic auth — so holding it means the browser passed the dashboard login at
+ * least once.
+ */
+export async function isAdmin(): Promise<boolean> {
+  return (await getCurrentRole()) === "admin";
+}
+
+/**
+ * Authorization gate for everything under a single creator's sheet.
+ *
+ *   admin           → any creator
+ *   logged-in creator → only their own creatorId
+ *   nobody          → false
+ *
+ * Pass no creatorId to ask "may this caller act across ALL creators?" — only
+ * the admin may.
+ */
+export async function canAccessCreator(creatorId?: string | null): Promise<boolean> {
+  if (!creatorId) return (await getCurrentRole()) === "admin";
+  return (await getCurrentRole(creatorId)) !== null;
+}
+
+/**
+ * Constant-time string comparison for secrets. A plain `!==` leaks how many
+ * leading characters matched through response timing; over a network that is
+ * mostly theoretical, but the credential here is short and shared, so there's
+ * no reason to hand out the hint.
+ */
+export function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, "utf8");
+  const bufB = Buffer.from(b, "utf8");
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
 }
 
 // Used by /api/creators/<slug>/login as the success path

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { isAdmin } from "@/lib/creator-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +26,11 @@ interface PreviewRow {
  *   - aggregate counts by scheduler name (Vuk / Jocke / Mike / other)
  */
 export async function POST(request: NextRequest) {
+  // Same rule as the import itself — this reads rows across any creator by id.
+  if (!(await isAdmin())) {
+    return NextResponse.json({ error: "Not authorized" }, { status: 403 });
+  }
+
   const body = await request.json().catch(() => ({}));
   const { ids } = body as { ids?: string[] };
   if (!Array.isArray(ids) || ids.length === 0) {

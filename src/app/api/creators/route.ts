@@ -1,6 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { generateCredentials, issueAdminToken, ADMIN_COOKIE, ADMIN_COOKIE_MAX_AGE } from "@/lib/creator-auth";
+import {
+  generateCredentials,
+  issueAdminToken,
+  isAdmin,
+  ADMIN_COOKIE,
+  ADMIN_COOKIE_MAX_AGE,
+  COOKIE_SECURE,
+} from "@/lib/creator-auth";
+
+// This whole path sits behind nginx basic auth (`location /`). GET additionally
+// bootstraps the admin session cookie, so it cannot require one. The mutating
+// handlers do require it — by then the admin panel has always called GET first.
+const forbidden = () =>
+  NextResponse.json({ error: "Not authorized" }, { status: 403 });
 
 function slugify(s: string): string {
   return s
@@ -34,6 +47,7 @@ export async function GET() {
     name: ADMIN_COOKIE,
     value: issueAdminToken(),
     httpOnly: true,
+    secure: COOKIE_SECURE,
     sameSite: "lax",
     path: "/",
     maxAge: ADMIN_COOKIE_MAX_AGE,
@@ -42,6 +56,8 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  if (!(await isAdmin())) return forbidden();
+
   const body = await request.json();
   const { name, color } = body as { name: string; color?: string };
 
@@ -73,6 +89,8 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PATCH(request: NextRequest) {
+  if (!(await isAdmin())) return forbidden();
+
   const { searchParams } = new URL(request.url);
   const id = searchParams.get("id");
   if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
@@ -98,6 +116,8 @@ export async function PATCH(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
+  if (!(await isAdmin())) return forbidden();
+
   const { searchParams } = new URL(request.url);
   const id = searchParams.get("id");
   if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });

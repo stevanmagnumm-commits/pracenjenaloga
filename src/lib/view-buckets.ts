@@ -9,8 +9,21 @@
 // separate question: "of these pasted accounts, which are under 100, which are
 // 100-200, which are above".
 
-/** Rolling window, matching the tracker's "Avg (last 36)". */
-export const VIEWS_WINDOW = 36;
+/**
+ * Rolling window, in reels, that the average is taken over.
+ *
+ * 24 rather than the tracker's 36. The provider serves 12 reels per call and
+ * the plan allows only 50 calls a minute, so this is the difference between 2
+ * calls and 3 on every live account — a third off the most expensive group in
+ * any list. Measured during a live run: the checker was already spending 40 of
+ * its 50 permitted calls per minute, so calls, not workers, are the budget.
+ *
+ * Consequence worth remembering: the number here is NOT the same number the
+ * tracker's "Avg (last 36)" column shows. Two dozen recent reels move faster
+ * than three, so an account that just changed pace reads differently in the two
+ * places. Deliberate, and the UI says so.
+ */
+export const VIEWS_WINDOW = 24;
 
 /**
  * Three graded buckets plus four distinct reasons an account carries no number.
@@ -49,8 +62,11 @@ export const VIEW_BUCKET_LABEL: Record<ViewBucket, string> = {
   mid: "100 – 200",
   over200: "200+",
   banned: "Banned",
-  noposts: "No posts",
-  noreels: "No reels",
+  // Both of these are LIVE accounts with nothing to average — say so in the
+  // label itself. "No posts" / "No reels" on their own read like a problem, and
+  // an account sitting in them is not one; it just cannot carry a number.
+  noposts: "Alive · no posts",
+  noreels: "Alive · no reels",
   failed: "Check failed",
 };
 

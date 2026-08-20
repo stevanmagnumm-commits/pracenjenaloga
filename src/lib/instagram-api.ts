@@ -34,9 +34,17 @@ async function trackApiCall() {
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 const RETRYABLE_BACKOFF_MS = [2_000, 5_000, 10_000, 20_000, 40_000];
 
+// A request that timed out is not the same as being told to slow down. It has
+// already burned the full deadline in silence, and sleeping another 40s on top
+// is dead time that buys nothing — measured on a live run, 54 timeouts in six
+// minutes while the checker sat at 40 of its 50 permitted calls per minute.
+// Timeouts get a short ladder; only a real 429 (or 5xx) gets the long one.
+const TIMEOUT_BACKOFF_MS = [1_000, 2_000, 3_000, 5_000, 8_000];
+
 async function retryWait(status: number, attempt: number, endpoint: string, retryAfterHeader: string | null) {
+  const ladder = status === TIMEOUT_STATUS ? TIMEOUT_BACKOFF_MS : RETRYABLE_BACKOFF_MS;
   // Honor Retry-After header if the server provides one (in seconds)
-  let waitMs = RETRYABLE_BACKOFF_MS[Math.min(attempt, RETRYABLE_BACKOFF_MS.length - 1)];
+  let waitMs = ladder[Math.min(attempt, ladder.length - 1)];
   if (retryAfterHeader) {
     const ra = Number(retryAfterHeader);
     if (Number.isFinite(ra) && ra > 0) waitMs = Math.max(waitMs, ra * 1000);
@@ -466,11 +474,21 @@ async function fetchReelStubsPageOnce(username: string, paginationToken?: string
 
 async function fetchReelStubsPage(username: string, paginationToken?: string): Promise<{ stubs: MediaStub[]; nextCursor?: string }> {
   const first = await fetchReelStubsPageOnce(username, paginationToken);
-  // Only the first page (no cursor) is retried — an empty first page usually
-  // means either "banned" or a transient API glitch, and we want to
-  // disambiguate before any ban-detection heuristic acts on it.
-  if (first.stubs.length > 0 || paginationToken) return first;
-  console.log(`[stubs:reels] @${username} returned 0 on first try, retrying once…`);
+  // EVERY empty page is retried once, not just the first.
+  //
+  // An empty first page means either "gone" or a transient glitch, and that has
+  // to be disambiguated before any ban heuristic acts on it. But an empty page
+  // *mid-pagination* is just as suspect and used to be trusted outright: the
+  // previous page handed back a real cursor, which the provider only issues
+  // when there is more to come, so a sudden nothing is far more likely to be a
+  // hiccup than the end of the feed. Trusting it cut the window short and
+  // quietly moved the average — the same account graded 143 over 33 reels and
+  // 92 over 12 twenty minutes apart, which is the difference between two
+  // buckets. The average is the whole point of this number, so it is worth one
+  // extra call to defend it.
+  if (first.stubs.length > 0) return first;
+  const where = paginationToken ? "mid-pagination" : "on the first page";
+  console.log(`[stubs:reels] @${username} returned 0 ${where}, retrying once…`);
   await new Promise((r) => setTimeout(r, 1500));
   const second = await fetchReelStubsPageOnce(username, paginationToken);
   if (second.stubs.length > 0) {

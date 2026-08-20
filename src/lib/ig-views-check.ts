@@ -10,10 +10,12 @@ import {
 /**
  * Standalone "how are these accounts performing" checker.
  *
- * Same metric the tracker shows as "Avg (last 36)": the mean view count of an
- * account's most recent 36 reels, pinned reels excluded. The difference is that
- * this tool takes a pasted list of arbitrary usernames and scrapes them live,
- * so accounts that were never imported into the tracker can be graded too.
+ * Grades an account by the mean view count of its most recent reels, pinned
+ * posts excluded. The window is VIEWS_WINDOW (24), deliberately shorter than
+ * the tracker's "Avg (last 36)" column so a live account costs two calls
+ * instead of three — see view-buckets.ts. It takes a pasted list of arbitrary
+ * usernames and scrapes them live, so accounts that were never imported into
+ * the tracker can be graded too.
  *
  * Bucket definitions live in ./view-buckets so the UI can share them.
  *
@@ -28,7 +30,8 @@ import {
  *
  * Cost per account, which matters because the plan allows only 50 calls/minute:
  * a banned account is 2 profile calls, an empty one 1 profile + 1 reels, a live
- * one 1 profile + 3 reels. On a list that is mostly dead that averages ~2.4.
+ * one 1 profile + 2 reels (24 reels = 2 pages). On a mostly dead list that
+ * averages ~2.2.
  *
  * Why the profile endpoint outranks the reels endpoint
  * ---------------------------------------------------
@@ -45,7 +48,7 @@ import {
 export interface ViewsCheckResult {
   username: string;
   avgViews: number | null;
-  /** How many reels the average is actually based on (can be < 36). */
+  /** How many reels the average is actually based on (can be < the window). */
   videosCounted: number;
   bucket: ViewBucket;
   /** Present whenever the account could not be graded, explaining why. */
@@ -69,11 +72,12 @@ export interface ViewsCheckProgress {
 
 // How many accounts are in flight against RapidAPI at once.
 //
-// This is NOT a free knob. The plan is capped at 50 calls/minute and the
-// provider answers in ~7.5s, so roughly 8 calls/minute come back per worker —
-// six workers already sit at ~48/min, right against the wall. Going higher does
-// not go faster, it just earns the "you have exceeded the rate limit" body,
+// This is NOT a free knob. The plan is capped at 50 calls/minute, and six
+// workers were measured on a live 174-account run at 40 calls/minute — 80% of
+// the ceiling, with zero 429s. So there is a little headroom and no more:
+// pushing the pool much higher buys "you have exceeded the rate limit" bodies,
 // which is the answer that used to be misread as "this account has no reels".
+// Wall-clock is won by spending fewer calls per account, not by more workers.
 const CONCURRENCY = Math.max(1, Number(process.env.IG_VIEWS_CONCURRENCY) || 6);
 
 // Extra reels attempts for an account confirmed alive. fetchLatestStubs already

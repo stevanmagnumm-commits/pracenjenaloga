@@ -213,12 +213,12 @@ export function IgViewsCheckerPage() {
     ? Math.round((progress.completed / progress.total) * 100)
     : 0;
 
-  // ~3.5s per account across the worker pool. Accounts parked for the second
-  // pass are still outstanding work, so they stay in the estimate.
+  // Accounts parked for the second pass are still outstanding work, so they
+  // stay in the estimate. Six workers, roughly 3.5s of useful work per account.
   const estimateRemaining = () => {
     if (!progress?.running || !progress.total) return "";
     const remaining = progress.total - progress.completed;
-    const seconds = Math.ceil((remaining * 3.5) / 5);
+    const seconds = Math.ceil((remaining * 3.5) / 6);
     if (seconds < 60) return `~${seconds}s`;
     return `~${Math.ceil(seconds / 60)}m`;
   };
@@ -238,9 +238,11 @@ export function IgViewsCheckerPage() {
         <h1 className="text-2xl font-bold">Views Checker</h1>
         <p className="text-sm text-muted-foreground mt-1">
           Paste usernames to grade them by the average views of their last{" "}
-          {VIEWS_WINDOW} reels — the same window the tracker shows as &quot;Avg
-          (last {VIEWS_WINDOW})&quot;. Accounts do not need to be in the tracker;
-          each one is scraped live (~3 API calls, a few seconds per account).
+          {VIEWS_WINDOW} reels, pinned posts excluded. Accounts do not need to be
+          in the tracker; each one is scraped live. Note this is a shorter window
+          than the tracker&apos;s &quot;Avg (last 36)&quot; column, so the two
+          numbers will not match exactly for an account that recently changed
+          pace.
         </p>
       </div>
 

@@ -6,6 +6,9 @@ import {
   Minus,
   TrendingUp,
   HelpCircle,
+  Ban,
+  Inbox,
+  ImageOff,
   Loader2,
   Play,
   Copy,
@@ -42,10 +45,9 @@ interface CheckProgress {
   total: number;
   completed: number;
   current: string | null;
-  under100: number;
-  mid: number;
-  over200: number;
-  nodata: number;
+  counts: Record<ViewBucket, number>;
+  phase: "idle" | "checking" | "confirming" | "done";
+  pending: number;
   running: boolean;
   results: ViewsCheckResult[];
 }
@@ -73,7 +75,22 @@ const BUCKET_META: Record<
     badgeCls: "bg-green-500/10 text-green-500",
     textCls: "text-green-500",
   },
-  nodata: {
+  banned: {
+    icon: Ban,
+    badgeCls: "bg-rose-600/15 text-rose-400",
+    textCls: "text-rose-400",
+  },
+  noposts: {
+    icon: Inbox,
+    badgeCls: "bg-slate-500/15 text-slate-400",
+    textCls: "text-slate-400",
+  },
+  noreels: {
+    icon: ImageOff,
+    badgeCls: "bg-sky-500/10 text-sky-400",
+    textCls: "text-sky-400",
+  },
+  failed: {
     icon: HelpCircle,
     badgeCls: "bg-zinc-500/20 text-zinc-300",
     textCls: "text-zinc-400",
@@ -152,7 +169,7 @@ export function IgViewsCheckerPage() {
   const results = progress?.results || [];
 
   // Worst first — the whole point of the screen is spotting the weak accounts.
-  // "No data" rows sink to the bottom since they carry no number.
+  // Ungraded rows (banned / no posts / failed) sink to the bottom — no number.
   const sorted = [...results].sort((a, b) => {
     if (a.avgViews === null && b.avgViews === null) return 0;
     if (a.avgViews === null) return 1;
@@ -162,14 +179,7 @@ export function IgViewsCheckerPage() {
   const filtered = filter === "all" ? sorted : sorted.filter((r) => r.bucket === filter);
 
   function bucketCount(b: ViewBucket): number {
-    if (!progress) return 0;
-    return b === "under100"
-      ? progress.under100
-      : b === "mid"
-        ? progress.mid
-        : b === "over200"
-          ? progress.over200
-          : progress.nodata;
+    return progress?.counts?.[b] ?? 0;
   }
 
   function toggleSelect(username: string) {
@@ -203,14 +213,24 @@ export function IgViewsCheckerPage() {
     ? Math.round((progress.completed / progress.total) * 100)
     : 0;
 
-  // ~3.5s per account across 3 workers (36 reels = 3 paged API calls each).
+  // ~3.5s per account across the worker pool. Accounts parked for the second
+  // pass are still outstanding work, so they stay in the estimate.
   const estimateRemaining = () => {
     if (!progress?.running || !progress.total) return "";
     const remaining = progress.total - progress.completed;
-    const seconds = Math.ceil((remaining * 3.5) / 3);
+    const seconds = Math.ceil((remaining * 3.5) / 5);
     if (seconds < 60) return `~${seconds}s`;
     return `~${Math.ceil(seconds / 60)}m`;
   };
+
+  // Pass 2 re-probes the accounts that answered "not found", so a ban is never
+  // called on a single answer. Without this line that pass looks like a stall.
+  const phaseLabel =
+    progress?.phase === "confirming"
+      ? `Confirming ${progress.pending} possible bans (2nd probe)`
+      : progress?.pending
+        ? `${progress.pending} parked for a 2nd probe`
+        : "";
 
   return (
     <div className="space-y-6 p-6">
@@ -274,6 +294,9 @@ export function IgViewsCheckerPage() {
               {progress.completed}/{progress.total} ({pct}%) — {estimateRemaining()} left
             </span>
           </div>
+          {phaseLabel && (
+            <p className="text-xs text-muted-foreground">{phaseLabel}</p>
+          )}
           <div className="h-2 rounded-full bg-muted overflow-hidden">
             <div
               className="h-full bg-primary transition-all duration-300"

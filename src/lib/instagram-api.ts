@@ -45,10 +45,92 @@ async function retryWait(status: number, attempt: number, endpoint: string, retr
   await new Promise((r) => setTimeout(r, waitMs));
 }
 
+// A request that never answers is worse than one that fails outright: with no
+// deadline on fetch(), a single hung call pins its caller indefinitely. Measured
+// against the live provider while it was degraded, 4 of 6 probes were still
+// waiting at 40s with no response at all. Cap the wait and let the retry ladder
+// above treat it like any other transient failure.
+const API_TIMEOUT_MS = Math.max(5_000, Number(process.env.IG_API_TIMEOUT_MS) || 20_000);
+const TIMEOUT_STATUS = 408;
+
+type FetchOutcome =
+  | { ok: true; response: Response }
+  | { ok: false; reason: string };
+
+/**
+ * The provider signals some transient failures with HTTP 200 and an error
+ * payload instead of a status code. Observed live on get_ig_user_reels.php:
+ *
+ *   ["Some error occurred. Please try again later."]
+ *
+ * Callers read `data.reels`, find nothing, and conclude the account has no
+ * reels — a failure silently becomes a fact. The same call answered with 12
+ * reels seconds earlier. Empty and unparseable bodies land here too; both used
+ * to escape the retry loop entirely (an unparseable body threw straight out of
+ * response.json()). Treat all three as transient so the ladder retries them.
+ */
+type JsonOutcome = { ok: true; data: unknown } | { ok: false; reason: string };
+
+async function readJsonBody(response: Response): Promise<JsonOutcome> {
+  const text = await response.text();
+  if (!text.trim()) return { ok: false, reason: "empty body" };
+
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return { ok: false, reason: `unparseable body: ${text.slice(0, 100)}` };
+  }
+
+  // Shape 1 — a bare array of strings:
+  //   ["Some error occurred. Please try again later."]
+  if (
+    Array.isArray(data) &&
+    data.length > 0 &&
+    data.every((entry) => typeof entry === "string") &&
+    /error occurred|try again|rate limit/i.test(data.join(" "))
+  ) {
+    return { ok: false, reason: (data as string[]).join(" ").slice(0, 120) };
+  }
+
+  // Shape 2 — the plan's per-minute cap, also served as HTTP 200:
+  //   {"message":"You have exceeded the rate limit per minute for your plan..."}
+  // This one is the expensive mistake: it has no `reels` key, so every caller
+  // read it as "this account has no reels" and filed a live account as dead.
+  //
+  // Deliberately NOT matched: {"error":"data not found"}, which is the genuine
+  // "this account is gone" answer the ban detection depends on.
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const message = (data as Record<string, unknown>).message;
+    if (typeof message === "string" && /rate limit|exceeded|quota/i.test(message)) {
+      return { ok: false, reason: message.slice(0, 120) };
+    }
+  }
+
+  return { ok: true, data };
+}
+
+async function fetchWithDeadline(url: string, init: RequestInit): Promise<FetchOutcome> {
+  try {
+    const response = await fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
+    });
+    return { ok: true, response };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const timedOut =
+      msg.includes("timed out") ||
+      msg.includes("aborted") ||
+      (err instanceof Error && err.name === "TimeoutError");
+    return { ok: false, reason: timedOut ? `no response within ${API_TIMEOUT_MS}ms` : msg };
+  }
+}
+
 async function apiPost(endpoint: string, body: Record<string, string>, retries = 5): Promise<unknown> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     await trackApiCall();
-    const response = await fetch(`${BASE_URL}${endpoint}`, {
+    const outcome = await fetchWithDeadline(`${BASE_URL}${endpoint}`, {
       method: "POST",
       headers: {
         "x-rapidapi-key": RAPIDAPI_KEY,
@@ -57,7 +139,28 @@ async function apiPost(endpoint: string, body: Record<string, string>, retries =
       },
       body: new URLSearchParams(body).toString(),
     });
-    if (response.ok) return response.json();
+    if (!outcome.ok) {
+      if (attempt < retries) {
+        await retryWait(TIMEOUT_STATUS, attempt, endpoint, null);
+        continue;
+      }
+      throw new Error(`API request failed: ${outcome.reason}`);
+    }
+    const response = outcome.response;
+    if (response.ok) {
+      const parsed = await readJsonBody(response);
+      if (!parsed.ok) {
+        if (attempt < retries) {
+          // A per-minute cap needs a real pause, not the 2s a hiccup gets, so
+          // it backs off on the 429 ladder rather than the transient one.
+          const overCap = /rate limit|exceeded|quota/i.test(parsed.reason);
+          await retryWait(overCap ? 429 : TIMEOUT_STATUS, attempt, endpoint, null);
+          continue;
+        }
+        throw new Error(`API error body on ${endpoint}: ${parsed.reason}`);
+      }
+      return parsed.data;
+    }
     if (RETRYABLE_STATUS.has(response.status) && attempt < retries) {
       await retryWait(response.status, attempt, endpoint, response.headers.get("retry-after"));
       continue;
@@ -71,14 +174,35 @@ async function apiPost(endpoint: string, body: Record<string, string>, retries =
 async function apiGet(endpoint: string, retries = 5): Promise<unknown> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     await trackApiCall();
-    const response = await fetch(`${BASE_URL}${endpoint}`, {
+    const outcome = await fetchWithDeadline(`${BASE_URL}${endpoint}`, {
       method: "GET",
       headers: {
         "x-rapidapi-key": RAPIDAPI_KEY,
         "x-rapidapi-host": RAPIDAPI_HOST,
       },
     });
-    if (response.ok) return response.json();
+    if (!outcome.ok) {
+      if (attempt < retries) {
+        await retryWait(TIMEOUT_STATUS, attempt, endpoint, null);
+        continue;
+      }
+      throw new Error(`API request failed: ${outcome.reason}`);
+    }
+    const response = outcome.response;
+    if (response.ok) {
+      const parsed = await readJsonBody(response);
+      if (!parsed.ok) {
+        if (attempt < retries) {
+          // A per-minute cap needs a real pause, not the 2s a hiccup gets, so
+          // it backs off on the 429 ladder rather than the transient one.
+          const overCap = /rate limit|exceeded|quota/i.test(parsed.reason);
+          await retryWait(overCap ? 429 : TIMEOUT_STATUS, attempt, endpoint, null);
+          continue;
+        }
+        throw new Error(`API error body on ${endpoint}: ${parsed.reason}`);
+      }
+      return parsed.data;
+    }
     if (RETRYABLE_STATUS.has(response.status) && attempt < retries) {
       await retryWait(response.status, attempt, endpoint, response.headers.get("retry-after"));
       continue;
@@ -100,13 +224,21 @@ async function mcGet(
 ): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     await trackApiCall();
-    const response = await fetch(`${BASE_URL}${path}`, {
+    const outcome = await fetchWithDeadline(`${BASE_URL}${path}`, {
       method: "GET",
       headers: {
         "x-rapidapi-key": RAPIDAPI_KEY,
         "x-rapidapi-host": RAPIDAPI_HOST,
       },
     });
+    if (!outcome.ok) {
+      if (attempt < retries) {
+        await retryWait(TIMEOUT_STATUS, attempt, path, null);
+        continue;
+      }
+      return { ok: false, status: TIMEOUT_STATUS, data: { error: outcome.reason } };
+    }
+    const response = outcome.response;
     if (response.ok) {
       return { ok: true, status: response.status, data: (await response.json()) as Record<string, unknown> };
     }
@@ -243,9 +375,23 @@ export async function fetchProfile(username: string): Promise<NormalizedProfile>
   }) as Record<string, unknown>;
 
   // The API returns HTTP 200 with {"error":"data not found"} for banned/missing
-  // accounts. Treat that as a hard failure so callers can mark them banned.
-  if (user.error || (!user.pk && !user.id && !user.username)) {
-    throw new Error(`Profile not found: @${username} (${user.error || "empty response"})`);
+  // accounts. That explicit sentence is the ONLY thing allowed to mean "gone".
+  const errText = typeof user.error === "string" ? user.error : "";
+  if (errText) {
+    if (/not found|does not exist|invalid username/i.test(errText)) {
+      throw new Error(`Profile not found: @${username} (${errText})`);
+    }
+    throw new Error(`Profile error for @${username}: ${errText}`);
+  }
+
+  // Anything else unrecognisable is a broken answer, not a verdict. Calling it
+  // "not found" here is exactly how a rate-limit body — served as HTTP 200 with
+  // {"message":"You have exceeded the rate limit per minute for your plan"} and
+  // no pk/id/username — turned live accounts into confirmed bans.
+  if (!user.pk && !user.id && !user.username) {
+    throw new Error(
+      `Profile response unusable for @${username}: ${JSON.stringify(user).slice(0, 120)}`,
+    );
   }
 
   return {
@@ -277,9 +423,23 @@ async function fetchReelStubsPageOnce(username: string, paginationToken?: string
   const reels = (data.reels as Array<Record<string, unknown>>) || [];
 
   const stubs: MediaStub[] = [];
+  let pinnedSkipped = 0;
   for (const reel of reels) {
     const m = (reel.node as Record<string, unknown>)?.media as Record<string, unknown>;
     if (!m) continue;
+
+    // A pinned reel sits at the top of the profile forever, so it keeps
+    // accumulating views while the rest of the feed turns over. Averaging it in
+    // lets one old viral clip speak for the account — the difference between
+    // "this account does 14K" and "this account does 2.6M". Instagram marks them
+    // with a non-empty clips_tab_pinned_user_ids; they are excluded from the
+    // window entirely, exactly like the profile grid treats them separately.
+    const pinnedFor = m.clips_tab_pinned_user_ids;
+    if (Array.isArray(pinnedFor) && pinnedFor.length > 0) {
+      pinnedSkipped++;
+      continue;
+    }
+
     const pk = String(m.pk || m.id || "");
     const code = (m.code as string) || "";
     if (!pk || !code) continue;
@@ -292,8 +452,15 @@ async function fetchReelStubsPageOnce(username: string, paginationToken?: string
     });
   }
 
+  if (pinnedSkipped > 0) {
+    console.log(`[stubs:reels] @${username} skipped ${pinnedSkipped} pinned reel(s)`);
+  }
+
+  // Note the cursor check uses the RAW reel count, not `stubs`: a page made up
+  // entirely of pinned reels is still a real page, and stopping there would cut
+  // the window short.
   const rawToken = (data.pagination_token as string) || "";
-  const nextCursor = rawToken.length > 10 && stubs.length > 0 ? rawToken : undefined;
+  const nextCursor = rawToken.length > 10 && reels.length > 0 ? rawToken : undefined;
   return { stubs, nextCursor };
 }
 

@@ -253,23 +253,29 @@ export function IgViewsCheckerPage() {
     ? Math.round((progress.completed / progress.total) * 100)
     : 0;
 
-  // Accounts parked for the second pass are still outstanding work, so they
-  // stay in the estimate. Six workers, roughly 3.5s of useful work per account.
+  // Two passes run at very different speeds, so the estimate has to know which
+  // one it is in. Pass 1 is six accounts at a time, ~3.5s each. Pass 2 walks
+  // them one at a time with a recheck in between — call it 15s per account.
   const estimateRemaining = () => {
     if (!progress?.running || !progress.total) return "";
     const remaining = progress.total - progress.completed;
-    const seconds = Math.ceil((remaining * 3.5) / 6);
+    const seconds =
+      progress.phase === "confirming"
+        ? remaining * 15
+        : Math.ceil(((remaining - progress.pending) * 3.5) / 6 + progress.pending * 15);
     if (seconds < 60) return `~${seconds}s`;
     return `~${Math.ceil(seconds / 60)}m`;
   };
 
-  // Pass 2 re-probes the accounts that answered "not found", so a ban is never
-  // called on a single answer. Without this line that pass looks like a stall.
+  // Pass 2 deliberately crawls: one account at a time, the same pace the Ban
+  // Checker uses. Probing these in parallel is what made half the "banned"
+  // verdicts wrong, so the slowness is the point — say so, or it reads as a
+  // stall and someone stops the run right before the answers arrive.
   const phaseLabel =
     progress?.phase === "confirming"
-      ? `Confirming ${progress.pending} possible bans (2nd probe)`
+      ? `Confirming ${progress.pending} possible bans one at a time — slow on purpose, parallel checks produce false bans`
       : progress?.pending
-        ? `${progress.pending} parked for a 2nd probe`
+        ? `${progress.pending} parked for the slow confirmation pass`
         : "";
 
   return (

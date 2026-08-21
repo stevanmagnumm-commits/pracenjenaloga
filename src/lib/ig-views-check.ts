@@ -85,9 +85,30 @@ const CONCURRENCY = Math.max(1, Number(process.env.IG_VIEWS_CONCURRENCY) || 6);
 const EMPTY_REELS_RETRIES = 2;
 const EMPTY_REELS_DELAY = 3_000;
 
-// "Not found" answers needed before a ban is declared, matching ig-ban-check.ts
-// on the "stable" provider.
+// Declaring a ban is the one verdict this tool cannot take back, and it was
+// getting it wrong more than half the time.
+//
+// Measured today: of 215 accounts this checker called banned, the Ban Checker —
+// same endpoint, same key, same accounts — found 59 of the first 113 ALIVE.
+// The two tools do not differ in logic; they differ in load. The Ban Checker
+// walks the list one account at a time, 1.3s apart. This one had six probes in
+// flight, and under that pressure the provider answers "data not found" for
+// accounts that are perfectly alive. Two confirmations taken under the same
+// pressure fail together — confirmation without independence confirms nothing.
+//
+// So the confirmation pass now copies ig-ban-check.ts exactly: sequential, one
+// account at a time, RATE_DELAY between accounts, BAN_CONFIRMATIONS consecutive
+// "not found" answers spaced RECHECK_DELAY apart, a single "alive" clears the
+// account, and anything unclear stops the probing and returns unclear — never a
+// ban. Those numbers are not guesses; that configuration was measured correct on
+// these very accounts today.
+//
+// Cost: roughly 10-20s per parked account, single file. Discovery stays
+// parallel — only the judgement is slow.
 const BAN_CONFIRMATIONS = 2;
+const RECHECK_DELAY = 8_000;
+const CONFIRM_CONCURRENCY = 1;
+const CONFIRM_RATE_DELAY = 1_300;
 
 function freshProgress(total: number, running: boolean): ViewsCheckProgress {
   return {
@@ -215,35 +236,74 @@ interface Job {
 }
 
 /**
- * Classify one account. On pass 1 a "not found" is parked (returns null) for the
- * confirmation pass; on the confirmation pass every outcome is final.
+ * Pass 1: one cheap probe. Alive accounts get graded straight away; anything
+ * else is parked (returns null) without a verdict, because a single answer
+ * taken under six-way parallel load is not evidence of anything.
  */
-async function classify(
+async function triage(
   job: Job,
-  isConfirmPass: boolean,
   isActive: () => boolean,
 ): Promise<ViewsCheckResult | null> {
   const { username } = job;
   try {
     const profile = await probeProfile(username);
-
     if (profile.state === "alive") {
       return await gradeAlive(username, profile.mediaCount, isActive);
     }
+    return null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[ig-views-check] @${username}:`, msg);
+    return ungraded(username, "failed", msg.slice(0, 160));
+  }
+}
 
-    if (!isConfirmPass) return null; // park it — pass 2 gets the second opinion
+/**
+ * Pass 2: the verdict, using checkProfile() from ig-ban-check.ts line for line.
+ *
+ *   - a single "alive" clears the account immediately, at any probe
+ *   - anything unclear (rate limit, timeout, unusable body) STOPS the probing
+ *     and returns unclear — a transient failure never becomes a ban
+ *   - only BAN_CONFIRMATIONS consecutive "not found" answers, RECHECK_DELAY
+ *     apart, are allowed to mean banned
+ *
+ * The caller runs this one account at a time. That is the part that matters.
+ */
+async function confirm(
+  job: Job,
+  isActive: () => boolean,
+): Promise<ViewsCheckResult> {
+  const { username } = job;
+  try {
+    for (let probe = 0; probe < BAN_CONFIRMATIONS; probe++) {
+      if (probe > 0) {
+        await sleep(RECHECK_DELAY);
+        if (!isActive()) return ungraded(username, "failed", "stopped by user");
+      }
+      const profile = await probeProfile(username);
 
-    if (profile.state === "missing") {
-      console.log(`[ig-views-check] @${username} -> BANNED (confirmed ${BAN_CONFIRMATIONS}x)`);
-      return ungraded(
-        username,
-        "banned",
-        `profile not found ${BAN_CONFIRMATIONS}x — banned or deleted`,
-      );
+      if (profile.state === "alive") {
+        const note = probe === 0 ? "" : " (recovered on recheck)";
+        console.log(`[ig-views-check] @${username} -> ALIVE${note}`);
+        return await gradeAlive(username, profile.mediaCount, isActive);
+      }
+      if (profile.state === "inconclusive") {
+        console.log(`[ig-views-check] @${username} -> UNCLEAR (${profile.reason.slice(0, 60)})`);
+        return ungraded(
+          username,
+          "failed",
+          `could not check: ${profile.reason.slice(0, 140)}`,
+        );
+      }
+      // "missing" — keep probing until BAN_CONFIRMATIONS agree.
     }
 
-    console.log(`[ig-views-check] @${username} -> FAILED (${profile.reason})`);
-    return ungraded(username, "failed", `could not check: ${profile.reason.slice(0, 140)}`);
+    console.log(`[ig-views-check] @${username} -> BANNED (confirmed ${BAN_CONFIRMATIONS}x)`);
+    return ungraded(
+      username,
+      "banned",
+      `profile not found ${BAN_CONFIRMATIONS}x, ${RECHECK_DELAY / 1000}s apart — banned or deleted`,
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[ig-views-check] @${username}:`, msg);
@@ -296,7 +356,7 @@ export async function runIgViewsCheck(usernames: string[]): Promise<void> {
     const parked: Job[] = [];
     await pool(jobs, CONCURRENCY, isActive, async (job) => {
       progress.current = job.username;
-      const result = await classify(job, false, isActive);
+      const result = await triage(job, isActive);
       if (result) finalize(result);
       else if (isActive()) {
         parked.push(job);
@@ -304,15 +364,21 @@ export async function runIgViewsCheck(usernames: string[]): Promise<void> {
       }
     });
 
-    // Pass 2 — second opinion on the parked ones, well separated in time.
+    // Pass 2 — the verdict, at the Ban Checker's pace: CONFIRM_CONCURRENCY (1)
+    // account at a time with CONFIRM_RATE_DELAY between them. Running this in
+    // parallel is precisely what produced 52% false bans; the slowness is the
+    // feature.
     if (parked.length && isActive()) {
       progress.phase = "confirming";
-      console.log(`[ig-views-check] Pass 2: re-probing ${parked.length} accounts`);
-      await pool(parked, CONCURRENCY, isActive, async (job) => {
+      console.log(
+        `[ig-views-check] Pass 2: confirming ${parked.length} accounts one at a time`,
+      );
+      await pool(parked, CONFIRM_CONCURRENCY, isActive, async (job) => {
         progress.current = job.username;
-        const result = await classify(job, true, isActive);
-        if (result) finalize(result);
+        const result = await confirm(job, isActive);
+        finalize(result);
         if (isActive()) progress.pending = Math.max(0, progress.pending - 1);
+        if (isActive()) await sleep(CONFIRM_RATE_DELAY);
       });
     }
   } catch (err) {

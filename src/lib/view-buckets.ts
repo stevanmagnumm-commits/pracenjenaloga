@@ -12,18 +12,13 @@
 /**
  * Rolling window, in reels, that the average is taken over.
  *
- * 24 rather than the tracker's 36. The provider serves 12 reels per call and
- * the plan allows only 50 calls a minute, so this is the difference between 2
- * calls and 3 on every live account — a third off the most expensive group in
- * any list. Measured during a live run: the checker was already spending 40 of
- * its 50 permitted calls per minute, so calls, not workers, are the budget.
- *
- * Consequence worth remembering: the number here is NOT the same number the
- * tracker's "Avg (last 36)" column shows. Two dozen recent reels move faster
- * than three, so an account that just changed pace reads differently in the two
- * places. Deliberate, and the UI says so.
+ * Back to 36, matching the tracker's "Avg (last 36)" column. It was briefly cut
+ * to 24 to save a call per live account (the provider serves 12 per call), but
+ * a number that disagrees with the tracker's for the same account is worth more
+ * than the call it saves — two screens showing different figures is how you
+ * stop trusting both.
  */
-export const VIEWS_WINDOW = 24;
+export const VIEWS_WINDOW = 36;
 
 /**
  * Three graded buckets plus four distinct reasons an account carries no number.

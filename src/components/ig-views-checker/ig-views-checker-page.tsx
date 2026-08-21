@@ -7,6 +7,8 @@ import {
   TrendingUp,
   HelpCircle,
   Ban,
+  ArrowUp,
+  ArrowDown,
   Inbox,
   ImageOff,
   Loader2,
@@ -53,6 +55,7 @@ interface CheckProgress {
 }
 
 type FilterMode = "all" | ViewBucket;
+type SortKey = "avg" | "videos" | "bucket";
 
 // Presentation only — the labels and ordering come from lib/view-buckets so
 // the UI can never disagree with how the server bucketed a result.
@@ -97,13 +100,37 @@ const BUCKET_META: Record<
   },
 };
 
+/** Arrow on a sortable header: filled on the active column, faint otherwise. */
+function SortMark({ active, dir }: { active: boolean; dir: "asc" | "desc" }) {
+  const Icon = dir === "asc" ? ArrowUp : ArrowDown;
+  return (
+    <Icon
+      className={`size-3 ${active ? "opacity-100" : "opacity-25"}`}
+      aria-hidden
+    />
+  );
+}
+
 export function IgViewsCheckerPage() {
   const [input, setInput] = useState("");
   const [progress, setProgress] = useState<CheckProgress | null>(null);
   const [filter, setFilter] = useState<FilterMode>("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [copied, setCopied] = useState(false);
+  const [sortKey, setSortKey] = useState<SortKey>("avg");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Clicking the active column flips direction; a new column starts ascending,
+  // which keeps the default "worst first" reading of the screen.
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  }
 
   const pollProgress = useCallback(async () => {
     try {
@@ -168,13 +195,26 @@ export function IgViewsCheckerPage() {
 
   const results = progress?.results || [];
 
-  // Worst first — the whole point of the screen is spotting the weak accounts.
-  // Ungraded rows (banned / no posts / failed) sink to the bottom — no number.
+  // Worst first by default — the whole point of the screen is spotting the weak
+  // accounts. Ungraded rows (banned / no posts / no reels / failed) carry no
+  // number, so they always sink to the bottom whichever way the sort points;
+  // floating them to the top on a descending sort would just bury the data.
   const sorted = [...results].sort((a, b) => {
-    if (a.avgViews === null && b.avgViews === null) return 0;
-    if (a.avgViews === null) return 1;
-    if (b.avgViews === null) return -1;
-    return a.avgViews - b.avgViews;
+    // Sorting by bucket groups the ungraded rows together — the way to pull all
+    // the banned accounts into one block — so it ranks every row and returns
+    // early, unlike the numeric sorts below.
+    if (sortKey === "bucket") {
+      const d =
+        VIEW_BUCKET_ORDER.indexOf(a.bucket) - VIEW_BUCKET_ORDER.indexOf(b.bucket);
+      if (d !== 0) return sortDir === "asc" ? d : -d;
+      return (b.avgViews ?? -1) - (a.avgViews ?? -1);
+    }
+    const av = sortKey === "avg" ? a.avgViews : a.videosCounted || null;
+    const bv = sortKey === "avg" ? b.avgViews : b.videosCounted || null;
+    if (av === null && bv === null) return 0;
+    if (av === null) return 1;
+    if (bv === null) return -1;
+    return sortDir === "asc" ? av - bv : bv - av;
   });
   const filtered = filter === "all" ? sorted : sorted.filter((r) => r.bucket === filter);
 
@@ -238,11 +278,10 @@ export function IgViewsCheckerPage() {
         <h1 className="text-2xl font-bold">Views Checker</h1>
         <p className="text-sm text-muted-foreground mt-1">
           Paste usernames to grade them by the average views of their last{" "}
-          {VIEWS_WINDOW} reels, pinned posts excluded. Accounts do not need to be
-          in the tracker; each one is scraped live. Note this is a shorter window
-          than the tracker&apos;s &quot;Avg (last 36)&quot; column, so the two
-          numbers will not match exactly for an account that recently changed
-          pace.
+          {VIEWS_WINDOW} reels, pinned posts excluded — the same window the
+          tracker shows as &quot;Avg (last {VIEWS_WINDOW})&quot;. Accounts do not
+          need to be in the tracker; each one is scraped live. Click the Avg
+          views, Videos or Bucket headers to sort.
         </p>
       </div>
 
@@ -403,9 +442,36 @@ export function IgViewsCheckerPage() {
                   </TableHead>
                   <TableHead className="w-12">#</TableHead>
                   <TableHead>Username</TableHead>
-                  <TableHead className="text-right w-28">Avg views</TableHead>
-                  <TableHead className="text-right w-20">Videos</TableHead>
-                  <TableHead className="w-32">Bucket</TableHead>
+                  <TableHead className="text-right w-28">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort("avg")}
+                      className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+                    >
+                      Avg views
+                      <SortMark active={sortKey === "avg"} dir={sortDir} />
+                    </button>
+                  </TableHead>
+                  <TableHead className="text-right w-20">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort("videos")}
+                      className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+                    >
+                      Videos
+                      <SortMark active={sortKey === "videos"} dir={sortDir} />
+                    </button>
+                  </TableHead>
+                  <TableHead className="w-32">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort("bucket")}
+                      className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+                    >
+                      Bucket
+                      <SortMark active={sortKey === "bucket"} dir={sortDir} />
+                    </button>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>

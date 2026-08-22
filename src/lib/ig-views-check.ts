@@ -11,11 +11,10 @@ import {
  * Standalone "how are these accounts performing" checker.
  *
  * Grades an account by the mean view count of its most recent reels, pinned
- * posts excluded. The window is VIEWS_WINDOW (24), deliberately shorter than
- * the tracker's "Avg (last 36)" column so a live account costs two calls
- * instead of three — see view-buckets.ts. It takes a pasted list of arbitrary
- * usernames and scrapes them live, so accounts that were never imported into
- * the tracker can be graded too.
+ * posts excluded, over VIEWS_WINDOW reels — the same window the tracker shows
+ * as "Avg (last 36)". It takes a pasted list of arbitrary usernames and scrapes
+ * them live, so accounts that were never imported into the tracker can be
+ * graded too.
  *
  * Bucket definitions live in ./view-buckets so the UI can share them.
  *
@@ -30,8 +29,7 @@ import {
  *
  * Cost per account, which matters because the plan allows only 50 calls/minute:
  * a banned account is 2 profile calls, an empty one 1 profile + 1 reels, a live
- * one 1 profile + 2 reels (24 reels = 2 pages). On a mostly dead list that
- * averages ~2.2.
+ * one 1 profile + 3 reels (36 reels = 3 pages).
  *
  * Why the profile endpoint outranks the reels endpoint
  * ---------------------------------------------------
@@ -65,6 +63,13 @@ export interface ViewsCheckProgress {
   phase: CheckPhase;
   /** Accounts parked for the confirmation pass (not yet counted in `completed`). */
   pending: number;
+  /**
+   * The parked usernames themselves. Exposed because they used to exist only
+   * inside the running function: when a run froze mid-pass, the 430 accounts
+   * waiting for a verdict were unrecoverable from the API and had to be
+   * reconstructed by diffing the input file against the finished results.
+   */
+  parked: string[];
   counts: BucketCounts;
   running: boolean;
   results: ViewsCheckResult[];
@@ -117,6 +122,7 @@ function freshProgress(total: number, running: boolean): ViewsCheckProgress {
     current: null,
     phase: running ? "checking" : "idle",
     pending: 0,
+    parked: [],
     counts: emptyBucketCounts(),
     running,
     results: [],
@@ -145,6 +151,40 @@ export function stopIgViewsCheck(): void {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// A hard ceiling on how long ONE account may occupy a worker.
+//
+// Every HTTP call already has its own 20s deadline, and every loop here is
+// bounded — and yet a live run froze solid with 3388 of 3818 done: five workers
+// idle, one stuck somewhere that no per-request timeout covered, and Promise.all
+// waiting on it forever. Pass 2 never started, so all 430 parked accounts were
+// left without a verdict and had to be reconstructed from the input file by
+// hand. Reasoning about which await can hang is how that bug got shipped; this
+// stops caring. If an account exceeds its budget it is recorded as failed and
+// the run moves on.
+//
+// The stuck work is not cancellable, so it keeps running in the background —
+// but it no longer holds the pool, and the run finishes.
+const TRIAGE_DEADLINE = 120_000;
+// Pass 2 legitimately takes longer: two probes with an 8s recheck between them,
+// then up to three reels attempts if the account turns out alive.
+const CONFIRM_DEADLINE = 180_000;
+
+async function withDeadline<T>(
+  work: Promise<T>,
+  ms: number,
+  onExpiry: () => T,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const guard = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(onExpiry()), ms);
+  });
+  try {
+    return await Promise.race([work, guard]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 type ProfileState =
   | { state: "alive"; mediaCount: number }
@@ -356,10 +396,14 @@ export async function runIgViewsCheck(usernames: string[]): Promise<void> {
     const parked: Job[] = [];
     await pool(jobs, CONCURRENCY, isActive, async (job) => {
       progress.current = job.username;
-      const result = await triage(job, isActive);
+      const result = await withDeadline(triage(job, isActive), TRIAGE_DEADLINE, () => {
+        console.error(`[ig-views-check] @${job.username} exceeded ${TRIAGE_DEADLINE / 1000}s — abandoned`);
+        return ungraded(job.username, "failed", `no answer within ${TRIAGE_DEADLINE / 1000}s`);
+      });
       if (result) finalize(result);
       else if (isActive()) {
         parked.push(job);
+        progress.parked = parked.map((j) => j.username);
         progress.pending = parked.length;
       }
     });
@@ -375,8 +419,12 @@ export async function runIgViewsCheck(usernames: string[]): Promise<void> {
       );
       await pool(parked, CONFIRM_CONCURRENCY, isActive, async (job) => {
         progress.current = job.username;
-        const result = await confirm(job, isActive);
+        const result = await withDeadline(confirm(job, isActive), CONFIRM_DEADLINE, () => {
+          console.error(`[ig-views-check] @${job.username} exceeded ${CONFIRM_DEADLINE / 1000}s — abandoned`);
+          return ungraded(job.username, "failed", `no answer within ${CONFIRM_DEADLINE / 1000}s`);
+        });
         finalize(result);
+        progress.parked = progress.parked.filter((u) => u !== job.username);
         if (isActive()) progress.pending = Math.max(0, progress.pending - 1);
         if (isActive()) await sleep(CONFIRM_RATE_DELAY);
       });
@@ -389,6 +437,7 @@ export async function runIgViewsCheck(usernames: string[]): Promise<void> {
       progress.running = false;
       progress.phase = "done";
       progress.pending = 0;
+      progress.parked = [];
       const c = progress.counts;
       console.log(
         `[ig-views-check] Done. <100: ${c.under100}, 100-200: ${c.mid}, 200+: ${c.over200}, ` +

@@ -20,13 +20,25 @@ const RATE_DELAY = 800;
 // the rest of the app is provider-agnostic.
 const IG_PROVIDER = (process.env.IG_PROVIDER || "stable").toLowerCase();
 
-async function trackApiCall() {
+// Deliberately NOT awaited by callers.
+//
+// This is one row that every single API attempt writes to, so six workers plus
+// the cron jobs all queue behind the same SQLite write lock. Making an outbound
+// HTTP request wait on that lock puts a database stall directly in the path of
+// every scrape — and a stalled counter update should never be able to stop the
+// work it is only counting. Losing a few increments if the process dies is a
+// far cheaper failure than a frozen run.
+function trackApiCall() {
   const month = getMonthKey();
-  await prisma.apiUsage.upsert({
-    where: { month },
-    update: { callCount: { increment: 1 } },
-    create: { month, callCount: 1 },
-  });
+  prisma.apiUsage
+    .upsert({
+      where: { month },
+      update: { callCount: { increment: 1 } },
+      create: { month, callCount: 1 },
+    })
+    .catch((err) => {
+      console.error("[api] usage counter write failed:", err instanceof Error ? err.message : err);
+    });
 }
 
 // On 429 (burst rate limit) we back off and retry several times — RapidAPI's
@@ -137,7 +149,7 @@ async function fetchWithDeadline(url: string, init: RequestInit): Promise<FetchO
 
 async function apiPost(endpoint: string, body: Record<string, string>, retries = 5): Promise<unknown> {
   for (let attempt = 0; attempt <= retries; attempt++) {
-    await trackApiCall();
+    trackApiCall();
     const outcome = await fetchWithDeadline(`${BASE_URL}${endpoint}`, {
       method: "POST",
       headers: {
@@ -181,7 +193,7 @@ async function apiPost(endpoint: string, body: Record<string, string>, retries =
 
 async function apiGet(endpoint: string, retries = 5): Promise<unknown> {
   for (let attempt = 0; attempt <= retries; attempt++) {
-    await trackApiCall();
+    trackApiCall();
     const outcome = await fetchWithDeadline(`${BASE_URL}${endpoint}`, {
       method: "GET",
       headers: {
@@ -231,7 +243,7 @@ async function mcGet(
   retries = 5,
 ): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
   for (let attempt = 0; attempt <= retries; attempt++) {
-    await trackApiCall();
+    trackApiCall();
     const outcome = await fetchWithDeadline(`${BASE_URL}${path}`, {
       method: "GET",
       headers: {

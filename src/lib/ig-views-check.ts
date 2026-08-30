@@ -1,4 +1,4 @@
-import { fetchLatestStubs, fetchProfile } from "./instagram-api";
+import { fetchLatestStubs, fetchProfile, isQuotaExhausted } from "./instagram-api";
 import {
   VIEWS_WINDOW,
   bucketForAvg,
@@ -70,6 +70,14 @@ export interface ViewsCheckProgress {
    * reconstructed by diffing the input file against the finished results.
    */
   parked: string[];
+  /**
+   * Set when the run stopped itself rather than finishing. Today that means the
+   * monthly API quota is gone — a condition that does not clear for days, so
+   * grinding on is worse than useless: every attempt still counts against the
+   * plan, which is how one run kept the quota at zero for five days straight.
+   * The panel shows this instead of leaving a wall of "Check failed".
+   */
+  abortedReason: string | null;
   counts: BucketCounts;
   running: boolean;
   results: ViewsCheckResult[];
@@ -123,6 +131,7 @@ function freshProgress(total: number, running: boolean): ViewsCheckProgress {
     phase: running ? "checking" : "idle",
     pending: 0,
     parked: [],
+    abortedReason: null,
     counts: emptyBucketCounts(),
     running,
     results: [],
@@ -136,6 +145,17 @@ let progress: ViewsCheckProgress = freshProgress(0, false);
 // stragglers still finishing a fetch cannot push results into the new run's
 // progress or drive its counters past `total`.
 let runToken = 0;
+
+// Raised the moment the provider says the monthly quota is gone. Checked by
+// isActive(), so both passes wind down instead of hammering a dead plan.
+let quotaAbort: string | null = null;
+
+function noteIfQuotaDead(err: unknown): void {
+  if (!quotaAbort && isQuotaExhausted(err)) {
+    quotaAbort = "Monthly API quota exhausted — run stopped. Nothing will check until the plan resets or is upgraded.";
+    console.error(`[ig-views-check] ABORT: ${quotaAbort}`);
+  }
+}
 
 export function getIgViewsCheckProgress(): ViewsCheckProgress {
   return progress;
@@ -203,6 +223,7 @@ async function probeProfile(username: string): Promise<ProfileState> {
     const profile = await fetchProfile(username);
     return { state: "alive", mediaCount: profile.mediaCount };
   } catch (err) {
+    noteIfQuotaDead(err);
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("Profile not found") || msg.includes("data not found")) {
       return { state: "missing" };
@@ -292,6 +313,7 @@ async function triage(
     }
     return null;
   } catch (err) {
+    noteIfQuotaDead(err);
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[ig-views-check] @${username}:`, msg);
     return ungraded(username, "failed", msg.slice(0, 160));
@@ -345,6 +367,7 @@ async function confirm(
       `profile not found ${BAN_CONFIRMATIONS}x, ${RECHECK_DELAY / 1000}s apart — banned or deleted`,
     );
   } catch (err) {
+    noteIfQuotaDead(err);
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[ig-views-check] @${username}:`, msg);
     return ungraded(username, "failed", msg.slice(0, 160));
@@ -379,7 +402,8 @@ export async function runIgViewsCheck(usernames: string[]): Promise<void> {
   ];
 
   const myToken = ++runToken;
-  const isActive = () => progress.running && runToken === myToken;
+  quotaAbort = null;
+  const isActive = () => progress.running && runToken === myToken && !quotaAbort;
 
   progress = freshProgress(cleaned.length, true);
 
@@ -438,6 +462,7 @@ export async function runIgViewsCheck(usernames: string[]): Promise<void> {
       progress.phase = "done";
       progress.pending = 0;
       progress.parked = [];
+      progress.abortedReason = quotaAbort;
       const c = progress.counts;
       console.log(
         `[ig-views-check] Done. <100: ${c.under100}, 100-200: ${c.mid}, 200+: ${c.over200}, ` +

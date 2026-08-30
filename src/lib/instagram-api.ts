@@ -46,6 +46,34 @@ function trackApiCall() {
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 const RETRYABLE_BACKOFF_MS = [2_000, 5_000, 10_000, 20_000, 40_000];
 
+/**
+ * The monthly plan quota is NOT a transient failure, and treating it as one is
+ * expensive twice over.
+ *
+ * The provider answers both limits with 429: "rate limit per minute", which
+ * clears in seconds and is worth retrying, and "MONTHLY quota", which does not
+ * clear for days. Retrying the second one six times with the 2s-40s ladder cost
+ * 77 seconds per account — a 1044-account run took eight days instead of an
+ * hour — and, worse, every one of those attempts still counts as a request at
+ * the provider. On 26 August alone the checker fired 14,088 requests at a quota
+ * that was already at zero, so when the monthly window reset the same loop
+ * drank it dry within a day. The outage never ended on its own.
+ *
+ * So: recognise it, fail immediately without a single retry, and let the caller
+ * stop the whole run instead of grinding silently.
+ */
+const MONTHLY_QUOTA_RE = /exceeded the monthly quota|monthly quota for requests/i;
+export const QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED";
+
+function quotaError(detail: string): Error {
+  return new Error(`${QUOTA_EXHAUSTED}: ${detail.slice(0, 160)}`);
+}
+
+export function isQuotaExhausted(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes(QUOTA_EXHAUSTED);
+}
+
 // A request that timed out is not the same as being told to slow down. It has
 // already burned the full deadline in silence, and sleeping another 40s on top
 // is dead time that buys nothing — measured on a live run, 54 timeouts in six
@@ -170,6 +198,7 @@ async function apiPost(endpoint: string, body: Record<string, string>, retries =
     if (response.ok) {
       const parsed = await readJsonBody(response);
       if (!parsed.ok) {
+        if (MONTHLY_QUOTA_RE.test(parsed.reason)) throw quotaError(parsed.reason);
         if (attempt < retries) {
           // A per-minute cap needs a real pause, not the 2s a hiccup gets, so
           // it backs off on the 429 ladder rather than the transient one.
@@ -181,11 +210,14 @@ async function apiPost(endpoint: string, body: Record<string, string>, retries =
       }
       return parsed.data;
     }
+    // Read the body before deciding to retry: a 429 can mean "slow down for a
+    // few seconds" or "your month is gone", and only the body tells them apart.
+    const text = await response.text();
+    if (MONTHLY_QUOTA_RE.test(text)) throw quotaError(text);
     if (RETRYABLE_STATUS.has(response.status) && attempt < retries) {
       await retryWait(response.status, attempt, endpoint, response.headers.get("retry-after"));
       continue;
     }
-    const text = await response.text();
     throw new Error(`API error ${response.status}: ${text}`);
   }
   throw new Error("Unreachable");
@@ -212,6 +244,7 @@ async function apiGet(endpoint: string, retries = 5): Promise<unknown> {
     if (response.ok) {
       const parsed = await readJsonBody(response);
       if (!parsed.ok) {
+        if (MONTHLY_QUOTA_RE.test(parsed.reason)) throw quotaError(parsed.reason);
         if (attempt < retries) {
           // A per-minute cap needs a real pause, not the 2s a hiccup gets, so
           // it backs off on the 429 ladder rather than the transient one.
@@ -223,11 +256,14 @@ async function apiGet(endpoint: string, retries = 5): Promise<unknown> {
       }
       return parsed.data;
     }
+    // Read the body before deciding to retry: a 429 can mean "slow down for a
+    // few seconds" or "your month is gone", and only the body tells them apart.
+    const text = await response.text();
+    if (MONTHLY_QUOTA_RE.test(text)) throw quotaError(text);
     if (RETRYABLE_STATUS.has(response.status) && attempt < retries) {
       await retryWait(response.status, attempt, endpoint, response.headers.get("retry-after"));
       continue;
     }
-    const text = await response.text();
     throw new Error(`API error ${response.status}: ${text}`);
   }
   throw new Error("Unreachable");

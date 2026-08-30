@@ -50,6 +50,7 @@ interface CheckProgress {
   counts: Record<ViewBucket, number>;
   phase: "idle" | "checking" | "confirming" | "done";
   pending: number;
+  abortedReason: string | null;
   running: boolean;
   results: ViewsCheckResult[];
 }
@@ -329,6 +330,14 @@ export function IgViewsCheckerPage() {
           </span>
         </div>
       </div>
+
+      {progress?.abortedReason && (
+        <div className="rounded-md border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+          <span className="font-semibold">Run stopped.</span> {progress.abortedReason}
+          {" "}The accounts already graded above are valid; everything else is
+          simply unchecked, not bad.
+        </div>
+      )}
 
       {progress?.running && (
         <div className="space-y-2">

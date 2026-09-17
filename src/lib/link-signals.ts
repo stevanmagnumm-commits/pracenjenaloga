@@ -56,6 +56,7 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   { label: "more", re: /(^|[^a-z])more([^a-z]|$)/i },
   { label: "check it", re: /check\s*(it|me)?/i },
   { label: "find me", re: /find\s*me/i },
+  { label: "website", re: /web\s*site/i },
   // Blue + white, the OnlyFans palette, used as a nod to it. Adjacent pair only.
   { label: "💙🤍", re: /💙\s*🤍|🤍\s*💙/u },
 ];

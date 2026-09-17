@@ -332,7 +332,12 @@ export async function runLinkFinder(
   if (progress.running) return;
 
   const checkHighlights = opts.checkHighlights !== false;
-  const maxCandidates = Math.max(1, opts.maxCandidates || 500);
+  // Effectively no cap. The old default of 500 was an arbitrary number of mine,
+  // and it did real damage: it took the FIRST 500 candidates in seed order, so a
+  // 50-seed run collected 2,664 suggestions, paid a call for every seed, and
+  // then threw away everything after roughly the seventh seed. Paying to gather
+  // work and discarding it unasked is worse than being slow.
+  const maxCandidates = Math.max(1, opts.maxCandidates || 1_000_000);
 
   const cleanSeeds = [
     ...new Set(seeds.map((s) => s.trim().replace(/^@/, "").toLowerCase()).filter(Boolean)),

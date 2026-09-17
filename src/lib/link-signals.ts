@@ -62,6 +62,8 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   // The 18+ badge is used as the highlight's whole name on these accounts.
   { label: "🔞", re: /🔞/u },
   { label: "secret", re: /secret/i },
+  // "my page" only — bare "page" would catch front page, page 2 and the like.
+  { label: "my page", re: /my\s*pages?/i },
   // Blue + white, the OnlyFans palette, used as a nod to it. Adjacent pair only.
   { label: "💙🤍", re: /💙\s*🤍|🤍\s*💙/u },
 ];

@@ -6,6 +6,7 @@ import {
   Sparkles,
   MessageSquareText,
   Tag,
+  ExternalLink,
   CircleSlash,
   Lock,
   HelpCircle,
@@ -18,6 +19,7 @@ import {
   BadgeCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useRowSelection, openInstagramTabs } from "@/lib/use-row-selection";
 import {
   Table,
   TableBody,
@@ -129,7 +131,6 @@ export function IgLinkFinderPage() {
   const [checkHighlights, setCheckHighlights] = useState(true);
   const [progress, setProgress] = useState<FinderProgress | null>(null);
   const [filter, setFilter] = useState<"all" | LinkBucket>("all");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [copied, setCopied] = useState(false);
   // Collecting is expensive, filtering is free — so every criterion is applied
   // here, over results already in hand, and can be changed without re-scraping.
@@ -172,7 +173,7 @@ export function IgLinkFinderPage() {
     if (!seeds.length) return;
 
     setFilter("all");
-    setSelected(new Set());
+    clear();
 
     const res = await fetch("/api/ig-link-finder", {
       method: "POST",
@@ -194,7 +195,7 @@ export function IgLinkFinderPage() {
   function handleClear() {
     setInput("");
     setProgress(null);
-    setSelected(new Set());
+    clear();
   }
 
   const results = progress?.results || [];
@@ -236,35 +237,31 @@ export function IgLinkFinderPage() {
   const topHosts = [...hostCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
   const signalCount = sorted.filter((r) => r.bioSignals.length).length;
 
+  const { selected, toggle, clear, toggleAll, allSelected } = useRowSelection(
+    filtered.map((r) => r.username),
+  );
+
   function bucketCount(b: LinkBucket): number {
     return progress?.counts?.[b] ?? 0;
   }
 
-  function toggleSelect(username: string) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(username)) next.delete(username);
-      else next.add(username);
-      return next;
-    });
-  }
-
-  function toggleSelectAll() {
-    if (filtered.every((r) => selected.has(r.username)) && filtered.length > 0) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(filtered.map((r) => r.username)));
-    }
-  }
+  const selectedUsernames = () =>
+    filtered.filter((r) => selected.has(r.username)).map((r) => r.username);
 
   function handleCopySelected() {
-    const text = filtered
-      .filter((r) => selected.has(r.username))
-      .map((r) => r.username)
-      .join("\n");
-    navigator.clipboard.writeText(text);
+    navigator.clipboard.writeText(selectedUsernames().join("\n"));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  }
+
+  function handleOpenSelected() {
+    const { blocked } = openInstagramTabs(selectedUsernames());
+    if (blocked) {
+      alert(
+        `${blocked} tab(s) were blocked by the browser. Allow pop-ups for this site, ` +
+          `or open fewer at a time.`,
+      );
+    }
   }
 
   const pct = progress?.total
@@ -441,10 +438,8 @@ export function IgLinkFinderPage() {
           )}
 
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={toggleSelectAll}>
-              {filtered.every((r) => selected.has(r.username)) && filtered.length > 0
-                ? "Deselect all"
-                : "Select all shown"}
+            <Button variant="outline" size="sm" onClick={toggleAll}>
+              {allSelected ? "Deselect all" : "Select all shown"}
             </Button>
             <Button
               variant="outline"
@@ -454,6 +449,16 @@ export function IgLinkFinderPage() {
             >
               {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
               Copy {selected.size || ""} usernames
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleOpenSelected}
+              disabled={!selected.size}
+              title="Opens one tab per account — the browser may ask you to allow pop-ups"
+            >
+              <ExternalLink className="size-4" />
+              Open {selected.size || ""} in tabs
             </Button>
             {filter !== "all" && (
               <Button variant="ghost" size="sm" onClick={() => setFilter("all")}>
@@ -469,10 +474,8 @@ export function IgLinkFinderPage() {
                   <TableHead className="w-12 pl-4">
                     <input
                       type="checkbox"
-                      checked={
-                        filtered.length > 0 && filtered.every((r) => selected.has(r.username))
-                      }
-                      onChange={toggleSelectAll}
+                      checked={allSelected}
+                      onChange={toggleAll}
                       className="size-4"
                     />
                   </TableHead>
@@ -484,7 +487,7 @@ export function IgLinkFinderPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((r) => {
+                {filtered.map((r, idx) => {
                   const meta = BUCKET_META[r.bucket];
                   const Icon = meta.icon;
                   const links = [...r.bioLinks, ...r.storyLinks];
@@ -494,7 +497,10 @@ export function IgLinkFinderPage() {
                         <input
                           type="checkbox"
                           checked={selected.has(r.username)}
-                          onChange={() => toggleSelect(r.username)}
+                          // onClick, not onChange: only the click event carries
+                          // shiftKey, which is what turns this into a range.
+                          onChange={() => {}}
+                          onClick={(e) => toggle(r.username, idx, e.shiftKey)}
                           className="size-4"
                         />
                       </TableCell>

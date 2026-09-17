@@ -10,9 +10,11 @@ import {
   Copy,
   Check,
   Trash2,
+  ExternalLink,
   Square,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useRowSelection, openInstagramTabs } from "@/lib/use-row-selection";
 import {
   Table,
   TableBody,
@@ -44,7 +46,6 @@ export function IgBanCheckerPage() {
   const [input, setInput] = useState("");
   const [progress, setProgress] = useState<CheckProgress | null>(null);
   const [filter, setFilter] = useState<FilterMode>("all");
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [copied, setCopied] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -76,7 +77,7 @@ export function IgBanCheckerPage() {
     if (!usernames.length) return;
 
     setFilter("all");
-    setSelectedIds(new Set());
+    clear();
 
     const res = await fetch("/api/ig-ban-check", {
       method: "POST",
@@ -99,36 +100,35 @@ export function IgBanCheckerPage() {
   function handleClear() {
     setInput("");
     setProgress(null);
-    setSelectedIds(new Set());
+    clear();
   }
 
   const results = progress?.results || [];
   const filtered =
     filter === "all" ? results : results.filter((r) => r.status === filter);
 
-  function toggleSelect(idx: number) {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx);
-      else next.add(idx);
-      return next;
-    });
-  }
+  // Keyed by username, not row index: the index silently re-pointed at other
+  // accounts the moment a status filter was applied — tick five rows, click
+  // "banned", and the ticks were now on five different people.
+  const { selected, toggle, clear, toggleAll, allSelected } = useRowSelection(
+    filtered.map((r) => r.username),
+  );
 
-  function toggleSelectAll() {
-    if (selectedIds.size === filtered.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(filtered.map((_, i) => i)));
+  const selectedUsernames = () =>
+    filtered.filter((r) => selected.has(r.username)).map((r) => r.username);
+
+  function handleOpenSelected() {
+    const { blocked } = openInstagramTabs(selectedUsernames());
+    if (blocked) {
+      alert(
+        `${blocked} tab(s) were blocked by the browser. Allow pop-ups for this site, ` +
+          `or open fewer at a time.`,
+      );
     }
   }
 
   function handleCopyUsernames() {
-    const usernames = filtered
-      .filter((_, i) => selectedIds.has(i))
-      .map((r) => r.username)
-      .join("\n");
-    navigator.clipboard.writeText(usernames);
+    navigator.clipboard.writeText(selectedUsernames().join("\n"));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
@@ -254,7 +254,7 @@ export function IgBanCheckerPage() {
             )}
 
             <div className="flex items-center gap-1 ml-auto">
-              {selectedIds.size > 0 && (
+              {selected.size > 0 && (
                 <Button
                   variant="outline"
                   size="sm"
@@ -267,7 +267,18 @@ export function IgBanCheckerPage() {
                   )}
                   {copied
                     ? "Copied!"
-                    : `Copy ${selectedIds.size} username${selectedIds.size === 1 ? "" : "s"}`}
+                    : `Copy ${selected.size} username${selected.size === 1 ? "" : "s"}`}
+                </Button>
+              )}
+              {selected.size > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleOpenSelected}
+                  title="Opens one tab per account — the browser may ask you to allow pop-ups"
+                >
+                  <ExternalLink className="mr-1.5 size-4" />
+                  Open {selected.size} in tabs
                 </Button>
               )}
               {(["all", "alive", "banned", "inconclusive"] as FilterMode[]).map((f) => (
@@ -277,7 +288,7 @@ export function IgBanCheckerPage() {
                   size="sm"
                   onClick={() => {
                     setFilter(f);
-                    setSelectedIds(new Set());
+                    clear();
                   }}
                 >
                   {f === "all"
@@ -300,11 +311,8 @@ export function IgBanCheckerPage() {
                     <label className="flex items-center justify-center cursor-pointer py-1 px-1">
                       <input
                         type="checkbox"
-                        checked={
-                          filtered.length > 0 &&
-                          selectedIds.size === filtered.length
-                        }
-                        onChange={toggleSelectAll}
+                        checked={allSelected}
+                        onChange={toggleAll}
                         className="size-4 rounded border-border accent-primary cursor-pointer"
                       />
                     </label>
@@ -321,8 +329,11 @@ export function IgBanCheckerPage() {
                       <label className="flex items-center justify-center cursor-pointer py-2 px-1">
                         <input
                           type="checkbox"
-                          checked={selectedIds.has(idx)}
-                          onChange={() => toggleSelect(idx)}
+                          checked={selected.has(result.username)}
+                          // onClick, not onChange: only the click event carries
+                          // shiftKey, which is what makes a range.
+                          onChange={() => {}}
+                          onClick={(e) => toggle(result.username, idx, e.shiftKey)}
                           className="size-4 rounded border-border accent-primary cursor-pointer"
                         />
                       </label>

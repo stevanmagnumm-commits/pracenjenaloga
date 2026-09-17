@@ -9,6 +9,7 @@ import {
   Ban,
   ArrowUp,
   ArrowDown,
+  ExternalLink,
   Inbox,
   ImageOff,
   Loader2,
@@ -19,6 +20,7 @@ import {
   Square,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useRowSelection, openInstagramTabs } from "@/lib/use-row-selection";
 import {
   Table,
   TableBody,
@@ -116,7 +118,6 @@ export function IgViewsCheckerPage() {
   const [input, setInput] = useState("");
   const [progress, setProgress] = useState<CheckProgress | null>(null);
   const [filter, setFilter] = useState<FilterMode>("all");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [copied, setCopied] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("avg");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -168,7 +169,7 @@ export function IgViewsCheckerPage() {
     if (!usernames.length) return;
 
     setFilter("all");
-    setSelected(new Set());
+    clear();
 
     const res = await fetch("/api/ig-views-check", {
       method: "POST",
@@ -191,7 +192,7 @@ export function IgViewsCheckerPage() {
   function handleClear() {
     setInput("");
     setProgress(null);
-    setSelected(new Set());
+    clear();
   }
 
   const results = progress?.results || [];
@@ -219,35 +220,31 @@ export function IgViewsCheckerPage() {
   });
   const filtered = filter === "all" ? sorted : sorted.filter((r) => r.bucket === filter);
 
+  const { selected, toggle, clear, toggleAll, allSelected } = useRowSelection(
+    filtered.map((r) => r.username),
+  );
+
   function bucketCount(b: ViewBucket): number {
     return progress?.counts?.[b] ?? 0;
   }
 
-  function toggleSelect(username: string) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(username)) next.delete(username);
-      else next.add(username);
-      return next;
-    });
-  }
-
-  function toggleSelectAll() {
-    if (filtered.every((r) => selected.has(r.username)) && filtered.length > 0) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(filtered.map((r) => r.username)));
-    }
-  }
+  const selectedUsernames = () =>
+    filtered.filter((r) => selected.has(r.username)).map((r) => r.username);
 
   function handleCopySelected() {
-    const usernames = filtered
-      .filter((r) => selected.has(r.username))
-      .map((r) => r.username)
-      .join("\n");
-    navigator.clipboard.writeText(usernames);
+    navigator.clipboard.writeText(selectedUsernames().join("\n"));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  }
+
+  function handleOpenSelected() {
+    const { blocked } = openInstagramTabs(selectedUsernames());
+    if (blocked) {
+      alert(
+        `${blocked} tab(s) were blocked by the browser. Allow pop-ups for this site, ` +
+          `or open fewer at a time.`,
+      );
+    }
   }
 
   const pct = progress?.total
@@ -373,7 +370,7 @@ export function IgViewsCheckerPage() {
                 key={b}
                 onClick={() => {
                   setFilter(filter === b ? "all" : b);
-                  setSelected(new Set());
+                  clear();
                 }}
                 className={`rounded-lg border p-4 text-left transition-colors ${
                   filter === b
@@ -412,12 +409,23 @@ export function IgViewsCheckerPage() {
                     : `Copy ${selected.size} username${selected.size === 1 ? "" : "s"}`}
                 </Button>
               )}
+              {selected.size > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleOpenSelected}
+                  title="Opens one tab per account — the browser may ask you to allow pop-ups"
+                >
+                  <ExternalLink className="mr-1.5 size-4" />
+                  Open {selected.size} in tabs
+                </Button>
+              )}
               <Button
                 variant={filter === "all" ? "default" : "outline"}
                 size="sm"
                 onClick={() => {
                   setFilter("all");
-                  setSelected(new Set());
+                  clear();
                 }}
               >
                 All ({results.length})
@@ -429,7 +437,7 @@ export function IgViewsCheckerPage() {
                   size="sm"
                   onClick={() => {
                     setFilter(b);
-                    setSelected(new Set());
+                    clear();
                   }}
                 >
                   {VIEW_BUCKET_LABEL[b]} ({bucketCount(b)})
@@ -450,7 +458,7 @@ export function IgViewsCheckerPage() {
                           filtered.length > 0 &&
                           filtered.every((r) => selected.has(r.username))
                         }
-                        onChange={toggleSelectAll}
+                        onChange={toggleAll}
                         className="size-4 rounded border-border accent-primary cursor-pointer"
                       />
                     </label>
@@ -500,7 +508,10 @@ export function IgViewsCheckerPage() {
                           <input
                             type="checkbox"
                             checked={selected.has(result.username)}
-                            onChange={() => toggleSelect(result.username)}
+                            // onClick, not onChange: only the click event
+                            // carries shiftKey, which is what makes a range.
+                            onChange={() => {}}
+                            onClick={(e) => toggle(result.username, idx, e.shiftKey)}
                             className="size-4 rounded border-border accent-primary cursor-pointer"
                           />
                         </label>

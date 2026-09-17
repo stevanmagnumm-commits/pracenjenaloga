@@ -5,6 +5,7 @@ import {
   fetchHighlightLinks,
   bioLinksFromProfile,
   isQuotaExhausted,
+  type HighlightRef,
 } from "./instagram-api";
 import {
   BIO_SIGNALS,
@@ -95,10 +96,19 @@ export interface LinkFinderProgress {
 
 const CONCURRENCY = Math.max(1, Number(process.env.IG_LINK_CONCURRENCY) || 4);
 
-// Highlights are the expensive half. An account with a dozen of them would cost
-// thirteen calls on its own, so only the most recent few are opened — a link
-// sticker that matters is rarely buried at the bottom.
-const MAX_HIGHLIGHTS = Math.max(1, Number(process.env.IG_LINK_MAX_HIGHLIGHTS) || 4);
+// Highlights are the expensive half — measured at 86% of a run's API calls, so
+// every one opened has to earn it. Two, not four: all three accounts examined by
+// hand kept the funnel in their FIRST highlight, and the ordering puts a
+// link-named one ahead of the holiday albums anyway.
+const MAX_HIGHLIGHTS = Math.max(1, Number(process.env.IG_LINK_MAX_HIGHLIGHTS) || 2);
+
+// Below this, the highlight calls are not spent at all. On a 298-account run the
+// accounts needing highlight checks burned 86% of the budget; a small account is
+// not what this screen is looking for, so it is not worth five calls to find out.
+const MIN_FOLLOWERS_FOR_HIGHLIGHTS = Math.max(
+  0,
+  Number(process.env.IG_LINK_MIN_FOLLOWERS) || 10_000,
+);
 
 // Same hard ceiling the views checker needed: one account that never answers
 // must not be able to hold the whole run. Highlights make this path longer than
@@ -260,39 +270,80 @@ async function inspect(
       return { ...base, bucket: "none", note: "bio empty (highlights not checked)" };
     }
 
-    const highlights = await fetchHighlights(cand.username);
+    // Below the follower floor the highlight spend is not worth making: those
+    // calls are 86% of the budget and a small account is not the target.
+    if (base.followers < MIN_FOLLOWERS_FOR_HIGHLIGHTS) {
+      return {
+        ...base,
+        bucket: "none",
+        note: `under ${MIN_FOLLOWERS_FOR_HIGHLIGHTS.toLocaleString("en-US")} followers — highlights not checked`,
+      };
+    }
+
+    const seenIds = new Set<string>();
+    const storyLinks: string[] = [];
+    let unreadable = 0;
+    let openedCount = 0;
+
+    /** Open up to MAX_HIGHLIGHTS of these, named ones first, stopping at the
+     *  first link. Returns true the moment something is found. */
+    const tryHighlights = async (list: HighlightRef[]): Promise<boolean> => {
+      const ordered = [...list].sort(
+        (a, b) =>
+          Number(isFunnelHighlightTitle(b.title)) - Number(isFunnelHighlightTitle(a.title)),
+      );
+      for (const h of ordered) {
+        if (!isActive() || openedCount >= MAX_HIGHLIGHTS) break;
+        if (seenIds.has(h.id)) continue;
+        seenIds.add(h.id);
+        openedCount++;
+        try {
+          const links = await fetchHighlightLinks(h.id);
+          if (links.length) {
+            storyLinks.push(...links);
+            return true; // one is enough — never open the rest
+          }
+        } catch {
+          // One highlight the provider would not serve must not sink the
+          // account, but nor may it count as "checked, nothing there".
+          unreadable++;
+        }
+      }
+      return false;
+    };
+
+    // The list arrives truncated about four times in ten, so it is worth
+    // fetching twice — but only when the first pass came up empty. Fetching it
+    // twice up front spent a call on every account whose first highlight
+    // already held the link, and that was the common case: all three accounts
+    // examined by hand kept the funnel in their FIRST highlight.
+    let highlights = await fetchHighlights(cand.username);
+    base.highlightTitles = highlights.map((h) => h.title).filter(Boolean);
+
+    let found = highlights.length ? await tryHighlights(highlights) : false;
+
+    // A name that announces the funnel has already answered the question, so
+    // the second list call is pointless for these.
+    let namedHits = base.highlightTitles.filter(isFunnelHighlightTitle);
+
+    if (!found && !namedHits.length && isActive()) {
+      const second = await fetchHighlights(cand.username);
+      const fresh = second.filter((h) => !seenIds.has(h.id));
+      if (fresh.length) {
+        base.highlightTitles = [
+          ...new Set([...base.highlightTitles, ...fresh.map((h) => h.title).filter(Boolean)]),
+        ];
+        namedHits = base.highlightTitles.filter(isFunnelHighlightTitle);
+        found = await tryHighlights(fresh);
+      }
+      highlights = [...highlights, ...fresh];
+    }
+
     if (!highlights.length) {
       return { ...base, bucket: "none", note: "no bio link, no highlights" };
     }
 
-    base.highlightTitles = highlights.map((h) => h.title).filter(Boolean);
-    const namedHits = base.highlightTitles.filter(isFunnelHighlightTitle);
-
-    // A highlight whose name announces the link is opened FIRST — it is the one
-    // most likely to hold the funnel, so trying it before the holiday albums
-    // answers sooner and costs less.
-    const ordered = [...highlights].sort(
-      (a, b) =>
-        Number(isFunnelHighlightTitle(b.title)) - Number(isFunnelHighlightTitle(a.title)),
-    );
-
-    const storyLinks: string[] = [];
-    let unreadable = 0;
-    const opened = ordered.slice(0, MAX_HIGHLIGHTS);
-    for (const h of opened) {
-      if (!isActive()) break;
-      try {
-        const links = await fetchHighlightLinks(h.id);
-        storyLinks.push(...links);
-        if (storyLinks.length) break; // one is enough to qualify
-      } catch {
-        // One highlight the provider would not serve must not sink the account,
-        // but it must also not be silently counted as "checked, nothing there".
-        unreadable++;
-      }
-    }
-
-    if (storyLinks.length) {
+    if (found) {
       const uniq = [...new Set(storyLinks)];
       return { ...base, storyLinks: uniq, linkHosts: hostsOf(uniq), bucket: "story" };
     }
@@ -316,13 +367,13 @@ async function inspect(
       return {
         ...base,
         bucket: "failed",
-        note: `no bio link; ${unreadable} of ${opened.length} highlight(s) could not be read — re-run this one`,
+        note: `no bio link; ${unreadable} of ${openedCount} highlight(s) could not be read — re-run this one`,
       };
     }
     return {
       ...base,
       bucket: "none",
-      note: `no bio link; ${opened.length} highlight(s) checked, none carried a link`,
+      note: `no bio link; ${openedCount} highlight(s) checked, none carried a link`,
     };
   } catch (err) {
     noteIfQuotaDead(err);

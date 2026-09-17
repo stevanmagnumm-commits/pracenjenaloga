@@ -862,29 +862,19 @@ export interface HighlightRef {
  * costs one call and two attempts settle the rest.
  */
 export async function fetchHighlights(username: string): Promise<HighlightRef[]> {
-  const merged = new Map<string, HighlightRef>();
-  let sawAny = false;
+  const page = await apiPost("/get_ig_user_highlights.php", {
+    username_or_url: username,
+  });
+  if (!Array.isArray(page)) return [];
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (attempt) await new Promise((r) => setTimeout(r, 1200));
-    const page = await apiPost("/get_ig_user_highlights.php", {
-      username_or_url: username,
-    });
-    if (!Array.isArray(page)) continue;
-    if (page.length) sawAny = true;
-
-    for (const raw of page) {
-      const node = (raw as Record<string, unknown>)?.node as Record<string, unknown> | undefined;
-      const id = node && typeof node.id === "string" ? node.id : "";
-      if (!id || merged.has(id)) continue;
-      merged.set(id, { id, title: (node?.title as string) || "" });
-    }
-
-    if ([...merged.values()].some((h) => isFunnelHighlightTitle(h.title))) break;
-    if (sawAny && attempt >= 1) break;
+  const out: HighlightRef[] = [];
+  for (const raw of page) {
+    const node = (raw as Record<string, unknown>)?.node as Record<string, unknown> | undefined;
+    const id = node && typeof node.id === "string" ? node.id : "";
+    if (!id) continue;
+    out.push({ id, title: (node?.title as string) || "" });
   }
-
-  return [...merged.values()];
+  return out;
 }
 
 /**

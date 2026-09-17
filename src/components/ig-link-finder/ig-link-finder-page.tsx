@@ -5,6 +5,7 @@ import {
   Link2,
   Sparkles,
   MessageSquareText,
+  Tag,
   CircleSlash,
   Lock,
   HelpCircle,
@@ -26,7 +27,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-type LinkBucket = "bio" | "signal" | "story" | "none" | "private" | "failed";
+type LinkBucket =
+  | "bio"
+  | "signal"
+  | "hlname"
+  | "story"
+  | "none"
+  | "private"
+  | "failed";
 
 interface FinderResult {
   username: string;
@@ -58,7 +66,15 @@ interface FinderProgress {
   results: FinderResult[];
 }
 
-const BUCKET_ORDER: LinkBucket[] = ["bio", "signal", "story", "none", "private", "failed"];
+const BUCKET_ORDER: LinkBucket[] = [
+  "bio",
+  "signal",
+  "hlname",
+  "story",
+  "none",
+  "private",
+  "failed",
+];
 
 const BUCKET_META: Record<
   LinkBucket,
@@ -75,6 +91,12 @@ const BUCKET_META: Record<
     icon: MessageSquareText,
     badgeCls: "bg-amber-500/10 text-amber-400",
     textCls: "text-amber-400",
+  },
+  hlname: {
+    label: "Highlight says so",
+    icon: Tag,
+    badgeCls: "bg-orange-500/10 text-orange-400",
+    textCls: "text-orange-400",
   },
   story: {
     label: "Link in highlight",
@@ -342,7 +364,7 @@ export function IgLinkFinderPage() {
 
       {progress && progress.results.length > 0 && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
             {BUCKET_ORDER.map((b) => {
               const meta = BUCKET_META[b];
               const Icon = meta.icon;

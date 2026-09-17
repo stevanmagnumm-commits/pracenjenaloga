@@ -41,7 +41,14 @@ import {
  * highlights: stopping there costs 3 calls where opening them all costs 15.
  */
 
-export type LinkBucket = "bio" | "signal" | "story" | "none" | "private" | "failed";
+export type LinkBucket =
+  | "bio"
+  | "signal"
+  | "hlname"
+  | "story"
+  | "none"
+  | "private"
+  | "failed";
 
 export interface LinkFinderResult {
   username: string;
@@ -112,7 +119,7 @@ function hostsOf(urls: string[]): string[] {
 }
 
 function emptyCounts(): Record<LinkBucket, number> {
-  return { bio: 0, signal: 0, story: 0, none: 0, private: 0, failed: 0 };
+  return { bio: 0, signal: 0, hlname: 0, story: 0, none: 0, private: 0, failed: 0 };
 }
 
 function freshProgress(running: boolean, seedsTotal = 0): LinkFinderProgress {
@@ -291,11 +298,14 @@ async function inspect(
     }
 
     // The name alone qualifies the account even when no sticker could be read —
-    // a highlight called "MY LINKS" is not named that by accident.
+    // a highlight called "MY LINKS" is not named that by accident. Kept apart
+    // from the bio phrases: both mean "good", but one was proven by what the
+    // account wrote about itself and the other by what it called a highlight,
+    // and collapsing them hides which check is actually earning its keep.
     if (namedHits.length) {
       return {
         ...base,
-        bucket: "signal",
+        bucket: "hlname",
         note: `highlight named: ${namedHits.join(", ")}`,
       };
     }
@@ -434,8 +444,8 @@ export async function runLinkFinder(
       progress.abortedReason = quotaAbort;
       const c = progress.counts;
       console.log(
-        `[ig-link-finder] Done. bio: ${c.bio}, signal: ${c.signal}, story: ${c.story}, ` +
-          `none: ${c.none}, private: ${c.private}, failed: ${c.failed}`,
+        `[ig-link-finder] Done. bio: ${c.bio}, signal: ${c.signal}, hlname: ${c.hlname}, ` +
+          `story: ${c.story}, none: ${c.none}, private: ${c.private}, failed: ${c.failed}`,
       );
     }
   }

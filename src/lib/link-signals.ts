@@ -28,6 +28,7 @@ export const BIO_SIGNALS: Signal[] = [
   // one: @jokesonella's bio ends "shh… don't tell anyone 👇🏼", which an
   // arrow-only pattern missed entirely.
   { label: "⬇️", re: /[⬇↓]|👇/u },
+  { label: "for more of me", re: /for\s*more\s*of\s*me/i },
 ];
 
 /**
@@ -57,6 +58,8 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   { label: "check it", re: /check\s*(it|me)?/i },
   { label: "find me", re: /find\s*me/i },
   { label: "website", re: /web\s*site/i },
+  // The 18+ badge is used as the highlight's whole name on these accounts.
+  { label: "🔞", re: /🔞/u },
   // Blue + white, the OnlyFans palette, used as a nod to it. Adjacent pair only.
   { label: "💙🤍", re: /💙\s*🤍|🤍\s*💙/u },
 ];

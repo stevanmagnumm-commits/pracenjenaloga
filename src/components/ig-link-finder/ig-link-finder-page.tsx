@@ -7,6 +7,7 @@ import {
   MessageSquareText,
   Tag,
   ExternalLink,
+  Download,
   CircleSlash,
   Lock,
   HelpCircle,
@@ -254,6 +255,25 @@ export function IgLinkFinderPage() {
     setTimeout(() => setCopied(false), 2000);
   }
 
+  // Every bucket that means "this account is running a funnel", regardless of
+  // which check proved it.
+  const GOOD: LinkBucket[] = ["bio", "signal", "hlname", "story"];
+  const goodResults = sorted.filter((r) => GOOD.includes(r.bucket));
+
+  function handleDownloadGood() {
+    if (!goodResults.length) return;
+    // CRLF, because these lists get opened in Notepad and pasted into Excel.
+    const nl = "\r\n";
+    const text = goodResults.map((r) => r.username).join(nl) + nl;
+    const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `link-finder-${stamp}-${goodResults.length}-accounts.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   function handleOpenSelected() {
     const { blocked } = openInstagramTabs(selectedUsernames());
     if (blocked) {
@@ -437,7 +457,16 @@ export function IgLinkFinderPage() {
             </div>
           )}
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              onClick={handleDownloadGood}
+              disabled={!goodResults.length}
+              title="Every account with a link — in bio, in a highlight, or announced in the bio or a highlight name"
+            >
+              <Download className="size-4" />
+              Download {goodResults.length} good
+            </Button>
             <Button variant="outline" size="sm" onClick={toggleAll}>
               {allSelected ? "Deselect all" : "Select all shown"}
             </Button>

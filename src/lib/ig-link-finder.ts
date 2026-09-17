@@ -293,7 +293,14 @@ async function inspect(
           Number(isFunnelHighlightTitle(b.title)) - Number(isFunnelHighlightTitle(a.title)),
       );
       for (const h of ordered) {
-        if (!isActive() || openedCount >= MAX_HIGHLIGHTS) break;
+        if (!isActive()) break;
+        // The budget is two highlights — but a highlight whose NAME announces
+        // the funnel is always opened, even past it. Otherwise the cap could be
+        // spent on two holiday albums in the first (truncated) list, leaving a
+        // "da link ;)" that only appeared in the second list unopened. That is
+        // the exact shape of the @natalieexking case, and the one call it costs
+        // is the most valuable one on the account.
+        if (openedCount >= MAX_HIGHLIGHTS && !isFunnelHighlightTitle(h.title)) break;
         if (seenIds.has(h.id)) continue;
         seenIds.add(h.id);
         openedCount++;

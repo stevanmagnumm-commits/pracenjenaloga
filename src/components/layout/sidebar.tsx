@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Film, Users, Plus, Instagram, AtSign, Music, Ghost, ShieldAlert, ShieldCheck, Calendar, UserPlus, Download, Gauge } from "lucide-react";
+import { LayoutDashboard, Film, Users, Plus, Instagram, AtSign, Music, Ghost, ShieldAlert, ShieldCheck, Calendar, UserPlus, Download, Gauge, Link2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ENABLE_THREADS, ENABLE_TIKTOK, ENABLE_SNAPCHAT, ENABLE_SECURITY } from "@/lib/modules";
 
@@ -14,6 +14,7 @@ const igNavItems = [
   { href: "/scheduler", label: "Scheduler", icon: Calendar },
   { href: "/ig-ban-checker", label: "Ban Checker", icon: ShieldAlert },
   { href: "/ig-views-checker", label: "Views Checker", icon: Gauge },
+  { href: "/ig-link-finder", label: "Link Finder", icon: Link2 },
   ...(ENABLE_SECURITY
     ? [{ href: "/security", label: "Login Monitor", icon: ShieldCheck }]
     : []),

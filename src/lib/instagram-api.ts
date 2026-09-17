@@ -728,3 +728,124 @@ export async function getApiUsage(): Promise<{ month: string; callCount: number 
   const usage = await prisma.apiUsage.findUnique({ where: { month } });
   return { month, callCount: usage?.callCount || 0 };
 }
+
+// ---------------------------------------------------------------------------
+// Link discovery: suggested accounts, bio links, highlight link stickers.
+//
+// Endpoint quirks found by probing the live API, all of which cost time to
+// rediscover:
+//   - get_ig_similar_accounts.php is GET and answers with a bare ARRAY of 80
+//     user objects, not an object with a key.
+//   - get_ig_user_highlights.php answers with an array of {node:{id,title,...}}
+//     and the id already carries the "highlight:" prefix.
+//   - get_highlights_stories.php REQUIRES that prefix. Passing the bare number
+//     returns {"error":"Invalid or missing highlight_id"}.
+//   - Both highlight endpoints emit the provider's fake-200 error array, so
+//     they go through apiPost and inherit its retry handling.
+// ---------------------------------------------------------------------------
+
+export interface SuggestedAccount {
+  username: string;
+  fullName: string;
+  igUserId: string;
+  isPrivate: boolean;
+  isVerified: boolean;
+}
+
+/** Up to ~80 accounts Instagram considers similar to the seed. One call. */
+export async function fetchSimilarAccounts(username: string): Promise<SuggestedAccount[]> {
+  const data = await apiGet(
+    `/get_ig_similar_accounts.php?username_or_url=${encodeURIComponent(username)}`,
+  );
+  if (!Array.isArray(data)) return [];
+  const out: SuggestedAccount[] = [];
+  for (const raw of data) {
+    const u = raw as Record<string, unknown>;
+    const name = typeof u.username === "string" ? u.username : "";
+    if (!name) continue;
+    out.push({
+      username: name,
+      fullName: (u.full_name as string) || "",
+      igUserId: String(u.id || ""),
+      isPrivate: Boolean(u.is_private),
+      isVerified: Boolean(u.is_verified),
+    });
+  }
+  return out;
+}
+
+/**
+ * Instagram wraps outbound links in its own redirect:
+ *   https://l.instagram.com/?u=<urlencoded destination>&e=...
+ * The wrapper is noise — what matters is where the link actually goes — so it
+ * is unwrapped here. Anything that is not a wrapper is returned unchanged.
+ */
+export function unwrapInstagramLink(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (!/(^|\.)l\.instagram\.com$/i.test(parsed.hostname)) return url;
+    const target = parsed.searchParams.get("u");
+    return target ? decodeURIComponent(target) : url;
+  } catch {
+    return url;
+  }
+}
+
+/** Links in the account's bio, cleaned of Instagram's redirect wrapper. */
+export function bioLinksFromProfile(profile: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  const direct = profile.external_url;
+  if (typeof direct === "string" && direct.trim()) out.push(unwrapInstagramLink(direct.trim()));
+
+  const list = profile.bio_links;
+  if (Array.isArray(list)) {
+    for (const raw of list) {
+      const l = raw as Record<string, unknown>;
+      const url = (l.url as string) || (l.lynx_url as string) || "";
+      if (typeof url === "string" && url.trim()) out.push(unwrapInstagramLink(url.trim()));
+    }
+  }
+  return [...new Set(out)];
+}
+
+export interface HighlightRef {
+  /** Already carries the "highlight:" prefix the stories endpoint demands. */
+  id: string;
+  title: string;
+}
+
+export async function fetchHighlights(username: string): Promise<HighlightRef[]> {
+  const data = await apiPost("/get_ig_user_highlights.php", { username_or_url: username });
+  if (!Array.isArray(data)) return [];
+  const out: HighlightRef[] = [];
+  for (const raw of data) {
+    const node = (raw as Record<string, unknown>)?.node as Record<string, unknown> | undefined;
+    const id = node && typeof node.id === "string" ? node.id : "";
+    if (!id) continue;
+    out.push({ id, title: (node?.title as string) || "" });
+  }
+  return out;
+}
+
+/** Every link sticker across the stories saved in one highlight. */
+export async function fetchHighlightLinks(highlightId: string): Promise<string[]> {
+  const data = (await apiPost("/get_highlights_stories.php", {
+    highlight_id: highlightId,
+  })) as Record<string, unknown>;
+
+  const items = Array.isArray(data?.items) ? (data.items as Array<Record<string, unknown>>) : [];
+  const out: string[] = [];
+  for (const item of items) {
+    for (const key of ["story_link_stickers", "story_cta"]) {
+      const stickers = item[key];
+      if (!Array.isArray(stickers)) continue;
+      for (const raw of stickers) {
+        const s = raw as Record<string, unknown>;
+        const link = (s.story_link as Record<string, unknown>) || s;
+        const url = (link?.url as string) || (link?.webUri as string) || (link?.web_uri as string) || "";
+        if (typeof url === "string" && url.trim()) out.push(unwrapInstagramLink(url.trim()));
+      }
+    }
+  }
+  return [...new Set(out)];
+}

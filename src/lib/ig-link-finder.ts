@@ -1,0 +1,368 @@
+import {
+  fetchProfile,
+  fetchSimilarAccounts,
+  fetchHighlights,
+  fetchHighlightLinks,
+  bioLinksFromProfile,
+  isQuotaExhausted,
+} from "./instagram-api";
+
+/**
+ * From a seed account, find the accounts Instagram suggests as similar, and
+ * report which of them are running a link — in the bio, or on a link sticker
+ * saved into a story highlight.
+ *
+ * What the provider actually gives, established by probing it rather than
+ * assuming (each of these cost a wrong guess to find):
+ *
+ *   get_ig_similar_accounts.php  GET, returns a bare array of ~80 accounts.
+ *   ig_get_fb_profile_v3.php     carries external_url and bio_links.
+ *   get_ig_user_highlights.php   array of {node:{id,title}}, id already
+ *                                prefixed "highlight:".
+ *   get_highlights_stories.php   REQUIRES that prefix; the bare number is
+ *                                rejected. Link stickers arrive intact, as
+ *                                story_link_stickers[].story_link.url, wrapped
+ *                                in l.instagram.com/?u=<destination>.
+ *
+ * Cost is the design constraint. A bio check is one call; a highlight check is
+ * one call for the list plus one per highlight. So highlights are only spent on
+ * accounts whose bio came back empty — an account already proven to run a link
+ * needs no second proof, and that alone cuts the bill by more than half on a
+ * typical batch.
+ */
+
+export type LinkBucket = "bio" | "story" | "none" | "private" | "failed";
+
+export interface LinkFinderResult {
+  username: string;
+  fullName: string;
+  bucket: LinkBucket;
+  /** Which seed account suggested this one. */
+  seed: string;
+  bioLinks: string[];
+  storyLinks: string[];
+  /**
+   * Hostnames of every link found, deduped — onlyfans.com, linktr.ee,
+   * beacons.ai and so on. The whole point of the screen is usually "who funnels
+   * where", and a hostname answers that in one glance where a full URL does not.
+   */
+  linkHosts: string[];
+  /** Full bio text, so it can be filtered on without re-running the scrape. */
+  biography: string;
+  followers: number;
+  /** Titles of the highlights that were opened — a highlight called "LINK" or
+   *  "VIP" is itself a signal, and it costs nothing extra to carry. */
+  highlightTitles: string[];
+  isVerified: boolean;
+  isPrivate: boolean;
+  note?: string;
+}
+
+export type FinderPhase = "idle" | "suggesting" | "checking" | "done";
+
+export interface LinkFinderProgress {
+  total: number;
+  completed: number;
+  current: string | null;
+  phase: FinderPhase;
+  /** Seeds asked for suggestions so far, out of how many were pasted. */
+  seedsDone: number;
+  seedsTotal: number;
+  counts: Record<LinkBucket, number>;
+  abortedReason: string | null;
+  running: boolean;
+  results: LinkFinderResult[];
+}
+
+const CONCURRENCY = Math.max(1, Number(process.env.IG_LINK_CONCURRENCY) || 4);
+
+// Highlights are the expensive half. An account with a dozen of them would cost
+// thirteen calls on its own, so only the most recent few are opened — a link
+// sticker that matters is rarely buried at the bottom.
+const MAX_HIGHLIGHTS = Math.max(1, Number(process.env.IG_LINK_MAX_HIGHLIGHTS) || 4);
+
+// Same hard ceiling the views checker needed: one account that never answers
+// must not be able to hold the whole run. Highlights make this path longer than
+// most, hence the generous budget.
+const ACCOUNT_DEADLINE = 180_000;
+
+/** Bare hostnames, lowercased and stripped of "www.", deduped. */
+function hostsOf(urls: string[]): string[] {
+  const out: string[] = [];
+  for (const u of urls) {
+    try {
+      out.push(new URL(u).hostname.replace(/^www\./i, "").toLowerCase());
+    } catch {
+      /* a link we cannot parse is still shown in full elsewhere */
+    }
+  }
+  return [...new Set(out)];
+}
+
+function emptyCounts(): Record<LinkBucket, number> {
+  return { bio: 0, story: 0, none: 0, private: 0, failed: 0 };
+}
+
+function freshProgress(running: boolean, seedsTotal = 0): LinkFinderProgress {
+  return {
+    total: 0,
+    completed: 0,
+    current: null,
+    phase: running ? "suggesting" : "idle",
+    seedsDone: 0,
+    seedsTotal,
+    counts: emptyCounts(),
+    abortedReason: null,
+    running,
+    results: [],
+  };
+}
+
+let progress: LinkFinderProgress = freshProgress(false);
+let runToken = 0;
+let quotaAbort: string | null = null;
+
+function noteIfQuotaDead(err: unknown): void {
+  if (!quotaAbort && isQuotaExhausted(err)) {
+    quotaAbort =
+      "Monthly API quota exhausted — run stopped. Nothing will check until the plan resets or is upgraded.";
+    console.error(`[ig-link-finder] ABORT: ${quotaAbort}`);
+  }
+}
+
+export function getLinkFinderProgress(): LinkFinderProgress {
+  return progress;
+}
+
+export function stopLinkFinder(): void {
+  if (progress.running) {
+    progress.running = false;
+    progress.current = null;
+    progress.phase = "done";
+    console.log("[ig-link-finder] Stopped by user");
+  }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function withDeadline<T>(work: Promise<T>, ms: number, onExpiry: () => T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const guard = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(onExpiry()), ms);
+  });
+  try {
+    return await Promise.race([work, guard]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function pool<T>(
+  items: T[],
+  limit: number,
+  isActive: () => boolean,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (isActive()) {
+      const i = next++;
+      if (i >= items.length) return;
+      await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
+interface Candidate {
+  username: string;
+  fullName: string;
+  seed: string;
+  isPrivate: boolean;
+  isVerified: boolean;
+}
+
+/** One candidate: bio first, highlights only if the bio came back empty. */
+async function inspect(
+  cand: Candidate,
+  checkHighlights: boolean,
+  isActive: () => boolean,
+): Promise<LinkFinderResult> {
+  const base = {
+    username: cand.username,
+    fullName: cand.fullName,
+    seed: cand.seed,
+    isVerified: cand.isVerified,
+    isPrivate: cand.isPrivate,
+    bioLinks: [] as string[],
+    storyLinks: [] as string[],
+    linkHosts: [] as string[],
+    biography: "",
+    followers: 0,
+    highlightTitles: [] as string[],
+  };
+
+  try {
+    const profile = (await fetchProfile(cand.username)) as unknown as Record<string, unknown>;
+    base.biography = typeof profile.biography === "string" ? profile.biography : "";
+    base.followers = Number(profile.follower_count) || 0;
+
+    const bioLinks = bioLinksFromProfile(profile);
+    if (bioLinks.length) {
+      return { ...base, bioLinks, linkHosts: hostsOf(bioLinks), bucket: "bio" };
+    }
+
+    // A private account will not hand over its highlights, so spending calls on
+    // them is guaranteed waste. Say so rather than filing it as "no link".
+    if (cand.isPrivate || profile.is_private === true) {
+      return { ...base, bucket: "private", note: "private account — highlights not readable" };
+    }
+
+    if (!checkHighlights) {
+      return { ...base, bucket: "none", note: "bio empty (highlights not checked)" };
+    }
+
+    const highlights = await fetchHighlights(cand.username);
+    if (!highlights.length) {
+      return { ...base, bucket: "none", note: "no bio link, no highlights" };
+    }
+
+    base.highlightTitles = highlights.map((h) => h.title).filter(Boolean);
+
+    const storyLinks: string[] = [];
+    for (const h of highlights.slice(0, MAX_HIGHLIGHTS)) {
+      if (!isActive()) break;
+      const links = await fetchHighlightLinks(h.id);
+      storyLinks.push(...links);
+      if (storyLinks.length) break; // one is enough to qualify
+    }
+
+    if (storyLinks.length) {
+      const uniq = [...new Set(storyLinks)];
+      return { ...base, storyLinks: uniq, linkHosts: hostsOf(uniq), bucket: "story" };
+    }
+    return {
+      ...base,
+      bucket: "none",
+      note: `no bio link; ${Math.min(highlights.length, MAX_HIGHLIGHTS)} highlight(s) checked, none carried a link`,
+    };
+  } catch (err) {
+    noteIfQuotaDead(err);
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("Profile not found") || msg.includes("data not found")) {
+      return { ...base, bucket: "failed", note: "profile not found — banned or deleted" };
+    }
+    console.error(`[ig-link-finder] @${cand.username}:`, msg);
+    return { ...base, bucket: "failed", note: msg.slice(0, 160) };
+  }
+}
+
+export async function runLinkFinder(
+  seeds: string[],
+  opts: { checkHighlights?: boolean; maxCandidates?: number } = {},
+): Promise<void> {
+  if (progress.running) return;
+
+  const checkHighlights = opts.checkHighlights !== false;
+  const maxCandidates = Math.max(1, opts.maxCandidates || 500);
+
+  const cleanSeeds = [
+    ...new Set(seeds.map((s) => s.trim().replace(/^@/, "").toLowerCase()).filter(Boolean)),
+  ];
+  if (!cleanSeeds.length) return;
+
+  const myToken = ++runToken;
+  quotaAbort = null;
+  const isActive = () => progress.running && runToken === myToken && !quotaAbort;
+
+  progress = freshProgress(true, cleanSeeds.length);
+
+  const finalize = (r: LinkFinderResult) => {
+    if (!isActive()) return;
+    progress.results.push(r);
+    progress.counts[r.bucket]++;
+    progress.completed++;
+  };
+
+  try {
+    // Phase 1 — collect suggestions. One call per seed, ~80 accounts each.
+    const seen = new Set(cleanSeeds);
+    const candidates: Candidate[] = [];
+
+    for (const seed of cleanSeeds) {
+      if (!isActive()) break;
+      progress.current = seed;
+      try {
+        const suggested = await fetchSimilarAccounts(seed);
+        for (const s of suggested) {
+          const key = s.username.toLowerCase();
+          if (seen.has(key)) continue; // already a seed, or suggested twice
+          seen.add(key);
+          candidates.push({
+            username: s.username,
+            fullName: s.fullName,
+            seed,
+            isPrivate: s.isPrivate,
+            isVerified: s.isVerified,
+          });
+        }
+        console.log(`[ig-link-finder] @${seed} -> ${suggested.length} suggestions`);
+      } catch (err) {
+        noteIfQuotaDead(err);
+        console.error(`[ig-link-finder] seed @${seed}:`, err instanceof Error ? err.message : err);
+      }
+      progress.seedsDone++;
+      await sleep(400);
+    }
+
+    const work = candidates.slice(0, maxCandidates);
+    progress.total = work.length;
+    progress.phase = "checking";
+    console.log(
+      `[ig-link-finder] ${work.length} candidates from ${cleanSeeds.length} seed(s); ` +
+        `highlights ${checkHighlights ? "on" : "off"}`,
+    );
+
+    // Phase 2 — inspect each candidate.
+    await pool(work, CONCURRENCY, isActive, async (cand) => {
+      progress.current = cand.username;
+      const result = await withDeadline(
+        inspect(cand, checkHighlights, isActive),
+        ACCOUNT_DEADLINE,
+        () => {
+          console.error(`[ig-link-finder] @${cand.username} exceeded ${ACCOUNT_DEADLINE / 1000}s`);
+          return {
+            username: cand.username,
+            fullName: cand.fullName,
+            seed: cand.seed,
+            isVerified: cand.isVerified,
+            isPrivate: cand.isPrivate,
+            bioLinks: [],
+            storyLinks: [],
+            linkHosts: [],
+            biography: "",
+            followers: 0,
+            highlightTitles: [],
+            bucket: "failed" as LinkBucket,
+            note: `no answer within ${ACCOUNT_DEADLINE / 1000}s`,
+          };
+        },
+      );
+      finalize(result);
+    });
+  } catch (err) {
+    console.error("[ig-link-finder] Batch error:", err);
+  } finally {
+    if (runToken === myToken) {
+      progress.current = null;
+      progress.running = false;
+      progress.phase = "done";
+      progress.abortedReason = quotaAbort;
+      const c = progress.counts;
+      console.log(
+        `[ig-link-finder] Done. bio: ${c.bio}, story: ${c.story}, none: ${c.none}, ` +
+          `private: ${c.private}, failed: ${c.failed}`,
+      );
+    }
+  }
+}

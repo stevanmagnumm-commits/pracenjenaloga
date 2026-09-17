@@ -815,7 +815,16 @@ export interface HighlightRef {
 }
 
 export async function fetchHighlights(username: string): Promise<HighlightRef[]> {
-  const data = await apiPost("/get_ig_user_highlights.php", { username_or_url: username });
+  // An empty array here is ambiguous: some accounts genuinely have no
+  // highlights, but the provider also answers [] when it simply failed. A
+  // couple of retries separate the two cheaply; only a persistent [] is taken
+  // as "really none".
+  let data: unknown = [];
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 1500));
+    data = await apiPost("/get_ig_user_highlights.php", { username_or_url: username });
+    if (Array.isArray(data) && data.length) break;
+  }
   if (!Array.isArray(data)) return [];
   const out: HighlightRef[] = [];
   for (const raw of data) {
@@ -827,13 +836,31 @@ export async function fetchHighlights(username: string): Promise<HighlightRef[]>
   return out;
 }
 
-/** Every link sticker across the stories saved in one highlight. */
+/**
+ * Every link sticker across the stories saved in one highlight.
+ *
+ * Throws rather than returning nothing when the provider will not answer. A
+ * highlight that exists always comes back as an object with `items`; an empty
+ * array is the provider failing, not an empty highlight. Observed live on
+ * @justnaomita: the first call returned `[]` (HTTP 200, two bytes) and the
+ * second returned 12KB containing the link. Reading that first answer as "no
+ * link" would have filed an account whose bio literally says "Check the
+ * Highlights" as having no funnel at all.
+ */
 export async function fetchHighlightLinks(highlightId: string): Promise<string[]> {
-  const data = (await apiPost("/get_highlights_stories.php", {
-    highlight_id: highlightId,
-  })) as Record<string, unknown>;
+  let data: unknown = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 1500));
+    data = await apiPost("/get_highlights_stories.php", { highlight_id: highlightId });
+    if (data && typeof data === "object" && !Array.isArray(data) && "items" in data) break;
+    data = null;
+  }
+  if (!data) {
+    throw new Error(`Highlight stories unavailable for ${highlightId}`);
+  }
 
-  const items = Array.isArray(data?.items) ? (data.items as Array<Record<string, unknown>>) : [];
+  const body = data as Record<string, unknown>;
+  const items = Array.isArray(body.items) ? (body.items as Array<Record<string, unknown>>) : [];
   const out: string[] = [];
   for (const item of items) {
     for (const key of ["story_link_stickers", "story_cta"]) {

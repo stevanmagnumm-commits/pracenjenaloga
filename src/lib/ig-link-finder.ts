@@ -230,21 +230,39 @@ async function inspect(
     base.highlightTitles = highlights.map((h) => h.title).filter(Boolean);
 
     const storyLinks: string[] = [];
-    for (const h of highlights.slice(0, MAX_HIGHLIGHTS)) {
+    let unreadable = 0;
+    const opened = highlights.slice(0, MAX_HIGHLIGHTS);
+    for (const h of opened) {
       if (!isActive()) break;
-      const links = await fetchHighlightLinks(h.id);
-      storyLinks.push(...links);
-      if (storyLinks.length) break; // one is enough to qualify
+      try {
+        const links = await fetchHighlightLinks(h.id);
+        storyLinks.push(...links);
+        if (storyLinks.length) break; // one is enough to qualify
+      } catch {
+        // One highlight the provider would not serve must not sink the account,
+        // but it must also not be silently counted as "checked, nothing there".
+        unreadable++;
+      }
     }
 
     if (storyLinks.length) {
       const uniq = [...new Set(storyLinks)];
       return { ...base, storyLinks: uniq, linkHosts: hostsOf(uniq), bucket: "story" };
     }
+
+    // Nothing found — but "found nothing" and "could not look" are different
+    // answers, and only one of them means the account has no funnel.
+    if (unreadable) {
+      return {
+        ...base,
+        bucket: "failed",
+        note: `no bio link; ${unreadable} of ${opened.length} highlight(s) could not be read — re-run this one`,
+      };
+    }
     return {
       ...base,
       bucket: "none",
-      note: `no bio link; ${Math.min(highlights.length, MAX_HIGHLIGHTS)} highlight(s) checked, none carried a link`,
+      note: `no bio link; ${opened.length} highlight(s) checked, none carried a link`,
     };
   } catch (err) {
     noteIfQuotaDead(err);

@@ -118,13 +118,10 @@ export function IgBanCheckerPage() {
     filtered.filter((r) => selected.has(r.username)).map((r) => r.username);
 
   function handleOpenSelected() {
-    const { blocked } = openInstagramTabs(selectedUsernames());
-    if (blocked) {
-      alert(
-        `${blocked} tab(s) were blocked by the browser. Allow pop-ups for this site, ` +
-          `or open fewer at a time.`,
-      );
-    }
+    // No confirmation and no warning: the browser's own pop-up prompt is
+    // the only gate worth having, and a dialog on top of it just adds a
+    // click to something meant to be one click.
+    openInstagramTabs(selectedUsernames());
   }
 
   function handleCopyUsernames() {

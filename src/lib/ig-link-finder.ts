@@ -47,6 +47,7 @@ export type LinkBucket =
   | "signal"
   | "hlname"
   | "story"
+  | "outofrange"
   | "none"
   | "private"
   | "failed";
@@ -102,17 +103,16 @@ const CONCURRENCY = Math.max(1, Number(process.env.IG_LINK_CONCURRENCY) || 4);
 // link-named one ahead of the holiday albums anyway.
 const MAX_HIGHLIGHTS = Math.max(1, Number(process.env.IG_LINK_MAX_HIGHLIGHTS) || 2);
 
-// Below this, the highlight calls are not spent at all. On a 298-account run the
-// accounts needing highlight checks burned 86% of the budget; a small account is
-// not what this screen is looking for, so it is not worth five calls to find out.
-const MIN_FOLLOWERS_FOR_HIGHLIGHTS = Math.max(
+// The follower range worth looking at. Outside it an account is dropped right
+// after the profile call — no bio check, no highlights, and never reported as
+// good. Those highlight calls were 86% of a run's budget.
+const MIN_FOLLOWERS = Math.max(
   0,
   Number(process.env.IG_LINK_MIN_FOLLOWERS) || 10_000,
 );
 
-// And an upper bound: an account with millions of followers is a different kind
-// of business, not a target, so its highlights are not worth opening either.
-const MAX_FOLLOWERS_FOR_HIGHLIGHTS = Math.max(
+
+const MAX_FOLLOWERS = Math.max(
   1,
   Number(process.env.IG_LINK_MAX_FOLLOWERS) || 1_000_000,
 );
@@ -136,7 +136,16 @@ function hostsOf(urls: string[]): string[] {
 }
 
 function emptyCounts(): Record<LinkBucket, number> {
-  return { bio: 0, signal: 0, hlname: 0, story: 0, none: 0, private: 0, failed: 0 };
+  return {
+    bio: 0,
+    signal: 0,
+    hlname: 0,
+    story: 0,
+    outofrange: 0,
+    none: 0,
+    private: 0,
+    failed: 0,
+  };
 }
 
 function freshProgress(running: boolean, seedsTotal = 0): LinkFinderProgress {
@@ -250,6 +259,25 @@ async function inspect(
     base.bioSignals = matchSignals(base.biography, BIO_SIGNALS);
     base.followers = Number(profile.follower_count) || 0;
 
+    // Out of range, out of the run. The follower count is only knowable after
+    // the profile call, so that one is unavoidable — but nothing past it is
+    // spent, and the account is never reported as good no matter what its bio
+    // says. A small account and a million-follower one are both a different
+    // business from the one this screen is looking for.
+    if (
+      base.followers < MIN_FOLLOWERS ||
+      base.followers > MAX_FOLLOWERS
+    ) {
+      return {
+        ...base,
+        bucket: "outofrange",
+        note:
+          base.followers < MIN_FOLLOWERS
+            ? `${base.followers.toLocaleString("en-US")} followers — under ${MIN_FOLLOWERS.toLocaleString("en-US")}`
+            : `${base.followers.toLocaleString("en-US")} followers — over ${MAX_FOLLOWERS.toLocaleString("en-US")}`,
+      };
+    }
+
     const bioLinks = bioLinksFromProfile(profile);
     if (bioLinks.length) {
       return { ...base, bioLinks, linkHosts: hostsOf(bioLinks), bucket: "bio" };
@@ -275,24 +303,6 @@ async function inspect(
 
     if (!checkHighlights) {
       return { ...base, bucket: "none", note: "bio empty (highlights not checked)" };
-    }
-
-    // Outside the follower range the highlight spend is not worth making: those
-    // calls are 86% of the budget, and neither a small account nor a
-    // million-follower one is what this is looking for.
-    if (base.followers < MIN_FOLLOWERS_FOR_HIGHLIGHTS) {
-      return {
-        ...base,
-        bucket: "none",
-        note: `under ${MIN_FOLLOWERS_FOR_HIGHLIGHTS.toLocaleString("en-US")} followers — highlights not checked`,
-      };
-    }
-    if (base.followers > MAX_FOLLOWERS_FOR_HIGHLIGHTS) {
-      return {
-        ...base,
-        bucket: "none",
-        note: `over ${MAX_FOLLOWERS_FOR_HIGHLIGHTS.toLocaleString("en-US")} followers — highlights not checked`,
-      };
     }
 
     const seenIds = new Set<string>();

@@ -18,6 +18,7 @@ import {
   Trash2,
   Square,
   BadgeCheck,
+  UserMinus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useRowSelection, openInstagramTabs } from "@/lib/use-row-selection";
@@ -35,6 +36,7 @@ type LinkBucket =
   | "signal"
   | "hlname"
   | "story"
+  | "outofrange"
   | "none"
   | "private"
   | "failed";
@@ -74,6 +76,7 @@ const BUCKET_ORDER: LinkBucket[] = [
   "signal",
   "hlname",
   "story",
+  "outofrange",
   "none",
   "private",
   "failed",
@@ -106,6 +109,12 @@ const BUCKET_META: Record<
     icon: Sparkles,
     badgeCls: "bg-violet-500/10 text-violet-400",
     textCls: "text-violet-400",
+  },
+  outofrange: {
+    label: "Out of range",
+    icon: UserMinus,
+    badgeCls: "bg-zinc-500/15 text-zinc-500",
+    textCls: "text-zinc-500",
   },
   none: {
     label: "No link",
@@ -275,13 +284,10 @@ export function IgLinkFinderPage() {
   }
 
   function handleOpenSelected() {
-    const { blocked } = openInstagramTabs(selectedUsernames());
-    if (blocked) {
-      alert(
-        `${blocked} tab(s) were blocked by the browser. Allow pop-ups for this site, ` +
-          `or open fewer at a time.`,
-      );
-    }
+    // No confirmation and no warning: the browser's own pop-up prompt is
+    // the only gate worth having, and a dialog on top of it just adds a
+    // click to something meant to be one click.
+    openInstagramTabs(selectedUsernames());
   }
 
   const pct = progress?.total
@@ -381,7 +387,7 @@ export function IgLinkFinderPage() {
 
       {progress && progress.results.length > 0 && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
             {BUCKET_ORDER.map((b) => {
               const meta = BUCKET_META[b];
               const Icon = meta.icon;

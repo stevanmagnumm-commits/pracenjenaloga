@@ -29,6 +29,7 @@ export const BIO_SIGNALS: Signal[] = [
   // arrow-only pattern missed entirely.
   { label: "⬇️", re: /[⬇↓]|👇/u },
   { label: "for more of me", re: /for\s*more\s*of\s*me/i },
+  { label: "my other page", re: /(my\s*)?other\s*(page|acc(ount)?|profile)/i },
 ];
 
 /**
@@ -60,6 +61,7 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   { label: "website", re: /web\s*site/i },
   // The 18+ badge is used as the highlight's whole name on these accounts.
   { label: "🔞", re: /🔞/u },
+  { label: "secret", re: /secret/i },
   // Blue + white, the OnlyFans palette, used as a nod to it. Adjacent pair only.
   { label: "💙🤍", re: /💙\s*🤍|🤍\s*💙/u },
 ];

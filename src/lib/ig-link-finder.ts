@@ -344,20 +344,34 @@ async function inspect(
       return false;
     };
 
-    // The list arrives truncated about four times in ten, so it is worth
-    // fetching twice — but only when the first pass came up empty. Fetching it
-    // twice up front spent a call on every account whose first highlight
-    // already held the link, and that was the common case: all three accounts
-    // examined by hand kept the funnel in their FIRST highlight.
+    // Names before links.
+    //
+    // One list call hands over EVERY highlight name at once, and reading them
+    // costs nothing more. Opening a highlight to look for the sticker costs a
+    // call each. So the names decide first: when one of them announces the
+    // funnel the account is already qualified, and only that highlight is
+    // opened — for the URL, not for the verdict. The rest are never touched.
+    //
+    // Before this, highlights were opened first and the names consulted
+    // afterwards, so an account with a highlight called "my page" spent two
+    // calls proving something its own title had already said.
+    const openNamedOnly = async (list: HighlightRef[]): Promise<boolean> =>
+      tryHighlights(list.filter((h) => isFunnelHighlightTitle(h.title)));
+
     let highlights = await fetchHighlights(cand.username);
     base.highlightTitles = highlights.map((h) => h.title).filter(Boolean);
-
-    let found = highlights.length ? await tryHighlights(highlights) : false;
-
-    // A name that announces the funnel has already answered the question, so
-    // the second list call is pointless for these.
     let namedHits = base.highlightTitles.filter(isFunnelHighlightTitle);
 
+    let found = false;
+    if (namedHits.length) {
+      found = await openNamedOnly(highlights);
+    } else if (highlights.length) {
+      found = await tryHighlights(highlights);
+    }
+
+    // The list arrives truncated about four times in ten, and the entry it drops
+    // is the one that matters — so a second look is worth it, but only when the
+    // first found neither a link nor a telling name.
     if (!found && !namedHits.length && isActive()) {
       const second = await fetchHighlights(cand.username);
       const fresh = second.filter((h) => !seenIds.has(h.id));
@@ -366,7 +380,7 @@ async function inspect(
           ...new Set([...base.highlightTitles, ...fresh.map((h) => h.title).filter(Boolean)]),
         ];
         namedHits = base.highlightTitles.filter(isFunnelHighlightTitle);
-        found = await tryHighlights(fresh);
+        found = namedHits.length ? await openNamedOnly(fresh) : await tryHighlights(fresh);
       }
       highlights = [...highlights, ...fresh];
     }

@@ -744,6 +744,36 @@ export async function getApiUsage(): Promise<{ month: string; callCount: number 
 //     they go through apiPost and inherit its retry handling.
 // ---------------------------------------------------------------------------
 
+/**
+ * The profile body as the provider sends it, unnormalized.
+ *
+ * fetchProfile() deliberately narrows its answer to the handful of fields the
+ * tracker needs, and external_url / bio_links are not among them — so anything
+ * hunting for links must ask for the raw body instead. Casting the narrowed
+ * result to a loose record and reading external_url off it silently yields
+ * undefined for every account, which is exactly the mistake this function
+ * exists to prevent.
+ */
+export async function fetchProfileRaw(username: string): Promise<Record<string, unknown>> {
+  const user = (await apiPost("/ig_get_fb_profile_v3.php", {
+    username_or_url: username,
+  })) as Record<string, unknown>;
+
+  const errText = typeof user.error === "string" ? user.error : "";
+  if (errText) {
+    if (/not found|does not exist|invalid username/i.test(errText)) {
+      throw new Error(`Profile not found: @${username} (${errText})`);
+    }
+    throw new Error(`Profile error for @${username}: ${errText}`);
+  }
+  if (!user.pk && !user.id && !user.username) {
+    throw new Error(
+      `Profile response unusable for @${username}: ${JSON.stringify(user).slice(0, 120)}`,
+    );
+  }
+  return user;
+}
+
 export interface SuggestedAccount {
   username: string;
   fullName: string;
@@ -814,26 +844,49 @@ export interface HighlightRef {
   title: string;
 }
 
+/** Titles that announce a funnel — used to end the retry loop early. */
+const HIGHLIGHT_TITLE_HINT = /link|here/i;
+
+/**
+ * The highlight list arrives TRUNCATED much of the time, and it drops exactly
+ * the entry that matters.
+ *
+ * Measured on @natalieexking, ten calls back to back: six returned both
+ * highlights, four returned only one — and the one silently missing was always
+ * "da link ;)", first on the profile and the one holding the funnel. Trusting a
+ * single answer loses the link on roughly four accounts in ten.
+ *
+ * An empty answer is separately ambiguous: some accounts really have none, but
+ * [] is also how this provider fails.
+ *
+ * So the list is the UNION of up to three attempts, keyed by id. A title that
+ * already announces itself ends the loop immediately, so the common case still
+ * costs one call and two attempts settle the rest.
+ */
 export async function fetchHighlights(username: string): Promise<HighlightRef[]> {
-  // An empty array here is ambiguous: some accounts genuinely have no
-  // highlights, but the provider also answers [] when it simply failed. A
-  // couple of retries separate the two cheaply; only a persistent [] is taken
-  // as "really none".
-  let data: unknown = [];
+  const merged = new Map<string, HighlightRef>();
+  let sawAny = false;
+
   for (let attempt = 0; attempt < 3; attempt++) {
-    if (attempt) await new Promise((r) => setTimeout(r, 1500));
-    data = await apiPost("/get_ig_user_highlights.php", { username_or_url: username });
-    if (Array.isArray(data) && data.length) break;
+    if (attempt) await new Promise((r) => setTimeout(r, 1200));
+    const page = await apiPost("/get_ig_user_highlights.php", {
+      username_or_url: username,
+    });
+    if (!Array.isArray(page)) continue;
+    if (page.length) sawAny = true;
+
+    for (const raw of page) {
+      const node = (raw as Record<string, unknown>)?.node as Record<string, unknown> | undefined;
+      const id = node && typeof node.id === "string" ? node.id : "";
+      if (!id || merged.has(id)) continue;
+      merged.set(id, { id, title: (node?.title as string) || "" });
+    }
+
+    if ([...merged.values()].some((h) => HIGHLIGHT_TITLE_HINT.test(h.title))) break;
+    if (sawAny && attempt >= 1) break;
   }
-  if (!Array.isArray(data)) return [];
-  const out: HighlightRef[] = [];
-  for (const raw of data) {
-    const node = (raw as Record<string, unknown>)?.node as Record<string, unknown> | undefined;
-    const id = node && typeof node.id === "string" ? node.id : "";
-    if (!id) continue;
-    out.push({ id, title: (node?.title as string) || "" });
-  }
-  return out;
+
+  return [...merged.values()];
 }
 
 /**

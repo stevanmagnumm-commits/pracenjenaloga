@@ -1,5 +1,5 @@
 import {
-  fetchProfile,
+  fetchProfileRaw,
   fetchSimilarAccounts,
   fetchHighlights,
   fetchHighlightLinks,
@@ -108,12 +108,32 @@ const BIO_SIGNALS: Array<{ label: string; re: RegExp }> = [
   { label: "check my highlights", re: /check\s+(my|the|out my)\s+highlights?/i },
   { label: "only backup", re: /only\s+backup/i },
   { label: "main", re: /(^|[^a-z])main([^a-z]|$)/i },
-  { label: "⬇️", re: /[⬇↓]/u },
+  // Down arrows come in several shapes, and the pointing hand is the common
+  // one: @jokesonella's bio ends "shh… don't tell anyone 👇🏼", which an
+  // arrow-only pattern misses entirely.
+  { label: "⬇️", re: /[⬇↓]|👇/u },
 ];
 
 function bioSignalsIn(text: string): string[] {
   if (!text) return [];
   return BIO_SIGNALS.filter((s) => s.re.test(text)).map((s) => s.label);
+}
+
+/**
+ * Highlight names that announce the funnel. Same idea as the bio phrases, one
+ * step later: once the highlight list is in hand (one call), a highlight called
+ * "LINK" or "MY LINKS" has already answered the question.
+ *
+ * "here" is bounded so it does not match "where" or "there". "link" is left
+ * loose on purpose, so "links", "my links" and "linkinbio" all count.
+ */
+const HIGHLIGHT_SIGNALS: Array<{ label: string; re: RegExp }> = [
+  { label: "link", re: /link/i },
+  { label: "here", re: /(^|[^a-z])here([^a-z]|$)/i },
+];
+
+function isSignalTitle(title: string): boolean {
+  return HIGHLIGHT_SIGNALS.some((s) => s.re.test(title));
 }
 
 /** Bare hostnames, lowercased and stripped of "www.", deduped. */
@@ -234,7 +254,12 @@ async function inspect(
   };
 
   try {
-    const profile = (await fetchProfile(cand.username)) as unknown as Record<string, unknown>;
+    // fetchProfileRaw, not fetchProfile. The narrowed profile carries `bio` and
+    // `followerCount` and no links at all — reading external_url off it yields
+    // undefined for every account, so nothing could ever qualify on its bio.
+    // A live run proved it: 361 candidates, 0 in "Link in bio", 0 in "Bio says
+    // so", while four accounts checked by hand all had a bio link.
+    const profile = await fetchProfileRaw(cand.username);
     base.biography = typeof profile.biography === "string" ? profile.biography : "";
     base.bioSignals = bioSignalsIn(base.biography);
     base.followers = Number(profile.follower_count) || 0;
@@ -272,10 +297,18 @@ async function inspect(
     }
 
     base.highlightTitles = highlights.map((h) => h.title).filter(Boolean);
+    const namedHits = base.highlightTitles.filter(isSignalTitle);
+
+    // A highlight whose name announces the link is opened FIRST — it is the one
+    // most likely to hold the funnel, so trying it before the holiday albums
+    // answers sooner and costs less.
+    const ordered = [...highlights].sort(
+      (a, b) => Number(isSignalTitle(b.title)) - Number(isSignalTitle(a.title)),
+    );
 
     const storyLinks: string[] = [];
     let unreadable = 0;
-    const opened = highlights.slice(0, MAX_HIGHLIGHTS);
+    const opened = ordered.slice(0, MAX_HIGHLIGHTS);
     for (const h of opened) {
       if (!isActive()) break;
       try {
@@ -292,6 +325,16 @@ async function inspect(
     if (storyLinks.length) {
       const uniq = [...new Set(storyLinks)];
       return { ...base, storyLinks: uniq, linkHosts: hostsOf(uniq), bucket: "story" };
+    }
+
+    // The name alone qualifies the account even when no sticker could be read —
+    // a highlight called "MY LINKS" is not named that by accident.
+    if (namedHits.length) {
+      return {
+        ...base,
+        bucket: "signal",
+        note: `highlight named: ${namedHits.join(", ")}`,
+      };
     }
 
     // Nothing found — but "found nothing" and "could not look" are different

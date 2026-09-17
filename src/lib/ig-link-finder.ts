@@ -110,6 +110,13 @@ const MIN_FOLLOWERS_FOR_HIGHLIGHTS = Math.max(
   Number(process.env.IG_LINK_MIN_FOLLOWERS) || 10_000,
 );
 
+// And an upper bound: an account with millions of followers is a different kind
+// of business, not a target, so its highlights are not worth opening either.
+const MAX_FOLLOWERS_FOR_HIGHLIGHTS = Math.max(
+  1,
+  Number(process.env.IG_LINK_MAX_FOLLOWERS) || 1_000_000,
+);
+
 // Same hard ceiling the views checker needed: one account that never answers
 // must not be able to hold the whole run. Highlights make this path longer than
 // most, hence the generous budget.
@@ -270,13 +277,21 @@ async function inspect(
       return { ...base, bucket: "none", note: "bio empty (highlights not checked)" };
     }
 
-    // Below the follower floor the highlight spend is not worth making: those
-    // calls are 86% of the budget and a small account is not the target.
+    // Outside the follower range the highlight spend is not worth making: those
+    // calls are 86% of the budget, and neither a small account nor a
+    // million-follower one is what this is looking for.
     if (base.followers < MIN_FOLLOWERS_FOR_HIGHLIGHTS) {
       return {
         ...base,
         bucket: "none",
         note: `under ${MIN_FOLLOWERS_FOR_HIGHLIGHTS.toLocaleString("en-US")} followers — highlights not checked`,
+      };
+    }
+    if (base.followers > MAX_FOLLOWERS_FOR_HIGHLIGHTS) {
+      return {
+        ...base,
+        bucket: "none",
+        note: `over ${MAX_FOLLOWERS_FOR_HIGHLIGHTS.toLocaleString("en-US")} followers — highlights not checked`,
       };
     }
 

@@ -64,6 +64,12 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   { label: "secret", re: /secret/i },
   // "my page" only — bare "page" would catch front page, page 2 and the like.
   { label: "my page", re: /my\s*pages?/i },
+  // The badge spelled out, next to the emoji form above.
+  { label: "18+", re: /18\s*\+/ },
+  // One pattern covers click me · click this · click here · just "click".
+  { label: "click", re: /click/i },
+  { label: "all of me", re: /all\s*of\s*me/i },
+  { label: "socials", re: /socials?/i },
   // Blue + white, the OnlyFans palette, used as a nod to it. Adjacent pair only.
   { label: "💙🤍", re: /💙\s*🤍|🤍\s*💙/u },
 ];

@@ -74,6 +74,29 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   { label: "💙🤍", re: /💙\s*🤍|🤍\s*💙/u },
 ];
 
+/**
+ * Scripts that mark an account as belonging to an audience this search is not
+ * for: Cyrillic, Arabic (including its supplements and presentation forms), and
+ * the Indic block from Devanagari through Malayalam.
+ *
+ * One character anywhere in the bio is enough. These accounts are dropped
+ * before any further call is spent — the point is not to judge the language but
+ * to stop paying to check profiles that will never be useful.
+ */
+const FOREIGN_SCRIPT = new RegExp(
+  "[" +
+    "\\u0400-\\u052F" + // Cyrillic + Cyrillic Supplement
+    "\\u2DE0-\\u2DFF\\uA640-\\uA69F" + // Cyrillic Extended-A / -B
+    "\\u0600-\\u06FF\\u0750-\\u077F\\u08A0-\\u08FF" + // Arabic + supplements
+    "\\uFB50-\\uFDFF\\uFE70-\\uFEFC" + // Arabic presentation forms
+    "\\u0900-\\u0D7F" + // Devanagari … Malayalam
+    "]",
+);
+
+export function hasForeignScript(text: string): boolean {
+  return !!text && FOREIGN_SCRIPT.test(text);
+}
+
 export function matchSignals(text: string, signals: Signal[]): string[] {
   if (!text) return [];
   return signals.filter((s) => s.re.test(text)).map((s) => s.label);

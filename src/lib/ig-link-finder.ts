@@ -11,6 +11,7 @@ import {
   BIO_SIGNALS,
   matchSignals,
   isFunnelHighlightTitle,
+  hasForeignScript,
 } from "./link-signals";
 
 /**
@@ -48,6 +49,7 @@ export type LinkBucket =
   | "hlname"
   | "story"
   | "outofrange"
+  | "wrongscript"
   | "none"
   | "private"
   | "failed";
@@ -142,6 +144,7 @@ function emptyCounts(): Record<LinkBucket, number> {
     hlname: 0,
     story: 0,
     outofrange: 0,
+    wrongscript: 0,
     none: 0,
     private: 0,
     failed: 0,
@@ -258,6 +261,18 @@ async function inspect(
     base.biography = typeof profile.biography === "string" ? profile.biography : "";
     base.bioSignals = matchSignals(base.biography, BIO_SIGNALS);
     base.followers = Number(profile.follower_count) || 0;
+
+    // Cyrillic, Arabic or Indic script in the bio means this is not the
+    // audience the search is for. One such character is the whole test, and it
+    // is checked before anything else so the account is abandoned here — no
+    // highlight calls, and never counted as good whatever else the bio holds.
+    if (hasForeignScript(base.biography)) {
+      return {
+        ...base,
+        bucket: "wrongscript",
+        note: "bio is not in Latin script — skipped",
+      };
+    }
 
     // Out of range, out of the run. The follower count is only knowable after
     // the profile call, so that one is unavoidable — but nothing past it is

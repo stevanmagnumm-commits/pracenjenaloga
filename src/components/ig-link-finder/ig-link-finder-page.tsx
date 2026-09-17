@@ -19,6 +19,7 @@ import {
   Square,
   BadgeCheck,
   UserMinus,
+  Languages,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useRowSelection, openInstagramTabs } from "@/lib/use-row-selection";
@@ -37,6 +38,7 @@ type LinkBucket =
   | "hlname"
   | "story"
   | "outofrange"
+  | "wrongscript"
   | "none"
   | "private"
   | "failed";
@@ -77,6 +79,7 @@ const BUCKET_ORDER: LinkBucket[] = [
   "hlname",
   "story",
   "outofrange",
+  "wrongscript",
   "none",
   "private",
   "failed",
@@ -113,6 +116,12 @@ const BUCKET_META: Record<
   outofrange: {
     label: "Out of range",
     icon: UserMinus,
+    badgeCls: "bg-zinc-500/15 text-zinc-500",
+    textCls: "text-zinc-500",
+  },
+  wrongscript: {
+    label: "Foreign script",
+    icon: Languages,
     badgeCls: "bg-zinc-500/15 text-zinc-500",
     textCls: "text-zinc-500",
   },

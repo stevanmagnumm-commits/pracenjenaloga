@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import {
   Link2,
   Sparkles,
+  MessageSquareText,
   CircleSlash,
   Lock,
   HelpCircle,
@@ -25,7 +26,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-type LinkBucket = "bio" | "story" | "none" | "private" | "failed";
+type LinkBucket = "bio" | "signal" | "story" | "none" | "private" | "failed";
 
 interface FinderResult {
   username: string;
@@ -36,6 +37,7 @@ interface FinderResult {
   storyLinks: string[];
   linkHosts: string[];
   biography: string;
+  bioSignals: string[];
   followers: number;
   highlightTitles: string[];
   isVerified: boolean;
@@ -56,7 +58,7 @@ interface FinderProgress {
   results: FinderResult[];
 }
 
-const BUCKET_ORDER: LinkBucket[] = ["bio", "story", "none", "private", "failed"];
+const BUCKET_ORDER: LinkBucket[] = ["bio", "signal", "story", "none", "private", "failed"];
 
 const BUCKET_META: Record<
   LinkBucket,
@@ -67,6 +69,12 @@ const BUCKET_META: Record<
     icon: Link2,
     badgeCls: "bg-green-500/10 text-green-500",
     textCls: "text-green-500",
+  },
+  signal: {
+    label: "Bio says so",
+    icon: MessageSquareText,
+    badgeCls: "bg-amber-500/10 text-amber-400",
+    textCls: "text-amber-400",
   },
   story: {
     label: "Link in highlight",
@@ -106,6 +114,7 @@ export function IgLinkFinderPage() {
   const [query, setQuery] = useState("");
   const [host, setHost] = useState("");
   const [minFollowers, setMinFollowers] = useState("");
+  const [onlySignal, setOnlySignal] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const pollProgress = useCallback(async () => {
@@ -179,6 +188,7 @@ export function IgLinkFinderPage() {
   const needle = query.trim().toLowerCase();
   const minF = Number(minFollowers) || 0;
   const filtered = byBucket.filter((r) => {
+    if (onlySignal && !r.bioSignals.length) return false;
     if (minF && r.followers < minF) return false;
     if (host && !r.linkHosts.some((h) => h.includes(host.toLowerCase()))) return false;
     if (!needle) return true;
@@ -202,6 +212,7 @@ export function IgLinkFinderPage() {
     for (const h of r.linkHosts) hostCounts.set(h, (hostCounts.get(h) || 0) + 1);
   }
   const topHosts = [...hostCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
+  const signalCount = sorted.filter((r) => r.bioSignals.length).length;
 
   function bucketCount(b: LinkBucket): number {
     return progress?.counts?.[b] ?? 0;
@@ -331,7 +342,7 @@ export function IgLinkFinderPage() {
 
       {progress && progress.results.length > 0 && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
             {BUCKET_ORDER.map((b) => {
               const meta = BUCKET_META[b];
               const Icon = meta.icon;
@@ -372,6 +383,17 @@ export function IgLinkFinderPage() {
               placeholder="Min followers"
               className="h-9 w-36 rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
+            <button
+              onClick={() => setOnlySignal(!onlySignal)}
+              className={`h-9 rounded-md border px-3 text-sm transition-colors ${
+                onlySignal
+                  ? "border-amber-500 text-amber-400"
+                  : "border-border text-muted-foreground hover:border-muted-foreground"
+              }`}
+              title='Bio says where the link is — "check my highlights", "only backup", "main", an arrow'
+            >
+              Bio signal <span className="opacity-60">{signalCount}</span>
+            </button>
             <span className="text-sm text-muted-foreground">
               {filtered.length} of {sorted.length}
             </span>
@@ -501,6 +523,18 @@ export function IgLinkFinderPage() {
                         <span className="block text-xs text-muted-foreground line-clamp-2">
                           {r.biography || "—"}
                         </span>
+                        {r.bioSignals.length > 0 && (
+                          <span className="mt-0.5 inline-flex flex-wrap gap-1">
+                            {r.bioSignals.map((sig) => (
+                              <span
+                                key={sig}
+                                className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[11px] text-amber-400"
+                              >
+                                {sig}
+                              </span>
+                            ))}
+                          </span>
+                        )}
                         {r.highlightTitles.length > 0 && (
                           <span className="block text-[11px] text-violet-400/70 mt-0.5">
                             highlights: {r.highlightTitles.slice(0, 4).join(" · ")}

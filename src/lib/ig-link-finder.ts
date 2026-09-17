@@ -25,13 +25,18 @@ import {
  *                                in l.instagram.com/?u=<destination>.
  *
  * Cost is the design constraint. A bio check is one call; a highlight check is
- * one call for the list plus one per highlight. So highlights are only spent on
- * accounts whose bio came back empty — an account already proven to run a link
- * needs no second proof, and that alone cuts the bill by more than half on a
- * typical batch.
+ * one call for the list plus one per highlight. So an account qualifies as
+ * early and as cheaply as it can:
+ *
+ *   1. a link in the bio            -> done, one call
+ *   2. a give-away phrase in the bio -> done, same one call, no highlight spend
+ *   3. otherwise                     -> open highlights, stop at the first link
+ *
+ * Measured on @michelahan_, whose funnel sits in the first of thirteen
+ * highlights: stopping there costs 3 calls where opening them all costs 15.
  */
 
-export type LinkBucket = "bio" | "story" | "none" | "private" | "failed";
+export type LinkBucket = "bio" | "signal" | "story" | "none" | "private" | "failed";
 
 export interface LinkFinderResult {
   username: string;
@@ -49,6 +54,8 @@ export interface LinkFinderResult {
   linkHosts: string[];
   /** Full bio text, so it can be filtered on without re-running the scrape. */
   biography: string;
+  /** Which of the known give-away phrases the bio contains, if any. */
+  bioSignals: string[];
   followers: number;
   /** Titles of the highlights that were opened — a highlight called "LINK" or
    *  "VIP" is itself a signal, and it costs nothing extra to carry. */
@@ -86,6 +93,29 @@ const MAX_HIGHLIGHTS = Math.max(1, Number(process.env.IG_LINK_MAX_HIGHLIGHTS) ||
 // most, hence the generous budget.
 const ACCOUNT_DEADLINE = 180_000;
 
+/**
+ * Phrases that give the funnel away in the bio itself, before a single extra
+ * call is spent. An account writing "check my highlights" has told you where
+ * the link is; @justnaomita's bio reads exactly that and carries no bio link at
+ * all, so this catches the most valuable group — the ones hiding the link in a
+ * story — for free.
+ *
+ * "main" needs boundaries or it matches domain, mainly, remain. The rest are
+ * distinctive enough to match as written.
+ */
+const BIO_SIGNALS: Array<{ label: string; re: RegExp }> = [
+  { label: "yes I have one", re: /yes,?\s*i\s*(have|got)\s*one/i },
+  { label: "check my highlights", re: /check\s+(my|the|out my)\s+highlights?/i },
+  { label: "only backup", re: /only\s+backup/i },
+  { label: "main", re: /(^|[^a-z])main([^a-z]|$)/i },
+  { label: "⬇️", re: /[⬇↓]/u },
+];
+
+function bioSignalsIn(text: string): string[] {
+  if (!text) return [];
+  return BIO_SIGNALS.filter((s) => s.re.test(text)).map((s) => s.label);
+}
+
 /** Bare hostnames, lowercased and stripped of "www.", deduped. */
 function hostsOf(urls: string[]): string[] {
   const out: string[] = [];
@@ -100,7 +130,7 @@ function hostsOf(urls: string[]): string[] {
 }
 
 function emptyCounts(): Record<LinkBucket, number> {
-  return { bio: 0, story: 0, none: 0, private: 0, failed: 0 };
+  return { bio: 0, signal: 0, story: 0, none: 0, private: 0, failed: 0 };
 }
 
 function freshProgress(running: boolean, seedsTotal = 0): LinkFinderProgress {
@@ -198,6 +228,7 @@ async function inspect(
     storyLinks: [] as string[],
     linkHosts: [] as string[],
     biography: "",
+    bioSignals: [] as string[],
     followers: 0,
     highlightTitles: [] as string[],
   };
@@ -205,11 +236,24 @@ async function inspect(
   try {
     const profile = (await fetchProfile(cand.username)) as unknown as Record<string, unknown>;
     base.biography = typeof profile.biography === "string" ? profile.biography : "";
+    base.bioSignals = bioSignalsIn(base.biography);
     base.followers = Number(profile.follower_count) || 0;
 
     const bioLinks = bioLinksFromProfile(profile);
     if (bioLinks.length) {
       return { ...base, bioLinks, linkHosts: hostsOf(bioLinks), bucket: "bio" };
+    }
+
+    // A bio that names its own funnel — "check my highlights", "only backup" —
+    // is proof enough on its own, so the account qualifies here and the
+    // highlight calls are never spent. That is 1+N calls saved on exactly the
+    // group that would otherwise be the most expensive to confirm.
+    if (base.bioSignals.length) {
+      return {
+        ...base,
+        bucket: "signal",
+        note: `bio says: ${base.bioSignals.join(", ")}`,
+      };
     }
 
     // A private account will not hand over its highlights, so spending calls on
@@ -359,6 +403,7 @@ export async function runLinkFinder(
             storyLinks: [],
             linkHosts: [],
             biography: "",
+            bioSignals: [],
             followers: 0,
             highlightTitles: [],
             bucket: "failed" as LinkBucket,
@@ -378,8 +423,8 @@ export async function runLinkFinder(
       progress.abortedReason = quotaAbort;
       const c = progress.counts;
       console.log(
-        `[ig-link-finder] Done. bio: ${c.bio}, story: ${c.story}, none: ${c.none}, ` +
-          `private: ${c.private}, failed: ${c.failed}`,
+        `[ig-link-finder] Done. bio: ${c.bio}, signal: ${c.signal}, story: ${c.story}, ` +
+          `none: ${c.none}, private: ${c.private}, failed: ${c.failed}`,
       );
     }
   }

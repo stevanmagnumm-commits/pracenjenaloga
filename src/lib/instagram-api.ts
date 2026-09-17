@@ -1,5 +1,6 @@
 import { prisma } from "./db";
 import { getMonthKey } from "./utils";
+import { isFunnelHighlightTitle } from "./link-signals";
 import type {
   NormalizedProfile,
   NormalizedMedia,
@@ -844,9 +845,6 @@ export interface HighlightRef {
   title: string;
 }
 
-/** Titles that announce a funnel — used to end the retry loop early. */
-const HIGHLIGHT_TITLE_HINT = /link|here/i;
-
 /**
  * The highlight list arrives TRUNCATED much of the time, and it drops exactly
  * the entry that matters.
@@ -882,7 +880,7 @@ export async function fetchHighlights(username: string): Promise<HighlightRef[]>
       merged.set(id, { id, title: (node?.title as string) || "" });
     }
 
-    if ([...merged.values()].some((h) => HIGHLIGHT_TITLE_HINT.test(h.title))) break;
+    if ([...merged.values()].some((h) => isFunnelHighlightTitle(h.title))) break;
     if (sawAny && attempt >= 1) break;
   }
 

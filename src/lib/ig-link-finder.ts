@@ -6,6 +6,11 @@ import {
   bioLinksFromProfile,
   isQuotaExhausted,
 } from "./instagram-api";
+import {
+  BIO_SIGNALS,
+  matchSignals,
+  isFunnelHighlightTitle,
+} from "./link-signals";
 
 /**
  * From a seed account, find the accounts Instagram suggests as similar, and
@@ -92,49 +97,6 @@ const MAX_HIGHLIGHTS = Math.max(1, Number(process.env.IG_LINK_MAX_HIGHLIGHTS) ||
 // must not be able to hold the whole run. Highlights make this path longer than
 // most, hence the generous budget.
 const ACCOUNT_DEADLINE = 180_000;
-
-/**
- * Phrases that give the funnel away in the bio itself, before a single extra
- * call is spent. An account writing "check my highlights" has told you where
- * the link is; @justnaomita's bio reads exactly that and carries no bio link at
- * all, so this catches the most valuable group — the ones hiding the link in a
- * story — for free.
- *
- * "main" needs boundaries or it matches domain, mainly, remain. The rest are
- * distinctive enough to match as written.
- */
-const BIO_SIGNALS: Array<{ label: string; re: RegExp }> = [
-  { label: "yes I have one", re: /yes,?\s*i\s*(have|got)\s*one/i },
-  { label: "check my highlights", re: /check\s+(my|the|out my)\s+highlights?/i },
-  { label: "only backup", re: /only\s+backup/i },
-  { label: "main", re: /(^|[^a-z])main([^a-z]|$)/i },
-  // Down arrows come in several shapes, and the pointing hand is the common
-  // one: @jokesonella's bio ends "shh… don't tell anyone 👇🏼", which an
-  // arrow-only pattern misses entirely.
-  { label: "⬇️", re: /[⬇↓]|👇/u },
-];
-
-function bioSignalsIn(text: string): string[] {
-  if (!text) return [];
-  return BIO_SIGNALS.filter((s) => s.re.test(text)).map((s) => s.label);
-}
-
-/**
- * Highlight names that announce the funnel. Same idea as the bio phrases, one
- * step later: once the highlight list is in hand (one call), a highlight called
- * "LINK" or "MY LINKS" has already answered the question.
- *
- * "here" is bounded so it does not match "where" or "there". "link" is left
- * loose on purpose, so "links", "my links" and "linkinbio" all count.
- */
-const HIGHLIGHT_SIGNALS: Array<{ label: string; re: RegExp }> = [
-  { label: "link", re: /link/i },
-  { label: "here", re: /(^|[^a-z])here([^a-z]|$)/i },
-];
-
-function isSignalTitle(title: string): boolean {
-  return HIGHLIGHT_SIGNALS.some((s) => s.re.test(title));
-}
 
 /** Bare hostnames, lowercased and stripped of "www.", deduped. */
 function hostsOf(urls: string[]): string[] {
@@ -261,7 +223,7 @@ async function inspect(
     // so", while four accounts checked by hand all had a bio link.
     const profile = await fetchProfileRaw(cand.username);
     base.biography = typeof profile.biography === "string" ? profile.biography : "";
-    base.bioSignals = bioSignalsIn(base.biography);
+    base.bioSignals = matchSignals(base.biography, BIO_SIGNALS);
     base.followers = Number(profile.follower_count) || 0;
 
     const bioLinks = bioLinksFromProfile(profile);
@@ -297,13 +259,14 @@ async function inspect(
     }
 
     base.highlightTitles = highlights.map((h) => h.title).filter(Boolean);
-    const namedHits = base.highlightTitles.filter(isSignalTitle);
+    const namedHits = base.highlightTitles.filter(isFunnelHighlightTitle);
 
     // A highlight whose name announces the link is opened FIRST — it is the one
     // most likely to hold the funnel, so trying it before the holiday albums
     // answers sooner and costs less.
     const ordered = [...highlights].sort(
-      (a, b) => Number(isSignalTitle(b.title)) - Number(isSignalTitle(a.title)),
+      (a, b) =>
+        Number(isFunnelHighlightTitle(b.title)) - Number(isFunnelHighlightTitle(a.title)),
     );
 
     const storyLinks: string[] = [];

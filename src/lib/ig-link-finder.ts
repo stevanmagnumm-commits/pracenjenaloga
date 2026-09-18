@@ -91,6 +91,12 @@ export interface LinkFinderProgress {
   /** Seeds asked for suggestions so far, out of how many were pasted. */
   seedsDone: number;
   seedsTotal: number;
+  /** Epoch ms, kept on the server so reopening the page does not restart the
+   *  clock. checkStartedAt is separate on purpose: the checking rate must not
+   *  be diluted by however long the seeding phase took before it. */
+  startedAt: number | null;
+  checkStartedAt: number | null;
+  finishedAt: number | null;
   counts: Record<LinkBucket, number>;
   abortedReason: string | null;
   running: boolean;
@@ -159,6 +165,9 @@ function freshProgress(running: boolean, seedsTotal = 0): LinkFinderProgress {
     phase: running ? "suggesting" : "idle",
     seedsDone: 0,
     seedsTotal,
+    startedAt: running ? Date.now() : null,
+    checkStartedAt: null,
+    finishedAt: null,
     counts: emptyCounts(),
     abortedReason: null,
     running,
@@ -187,6 +196,7 @@ export function stopLinkFinder(): void {
     progress.running = false;
     progress.current = null;
     progress.phase = "done";
+    progress.finishedAt = Date.now();
     console.log("[ig-link-finder] Stopped by user");
   }
 }
@@ -513,6 +523,7 @@ export async function runLinkFinder(
     const work = candidates.slice(0, maxCandidates);
     progress.total = work.length;
     progress.phase = "checking";
+    progress.checkStartedAt = Date.now();
     console.log(
       `[ig-link-finder] ${work.length} candidates from ${cleanSeeds.length} seed(s); ` +
         `highlights ${checkHighlights ? "on" : "off"}`,
@@ -553,6 +564,7 @@ export async function runLinkFinder(
       progress.current = null;
       progress.running = false;
       progress.phase = "done";
+      progress.finishedAt = Date.now();
       progress.abortedReason = quotaAbort;
       const c = progress.counts;
       console.log(

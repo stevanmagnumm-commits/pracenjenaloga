@@ -67,6 +67,9 @@ interface FinderProgress {
   phase: "idle" | "suggesting" | "checking" | "done";
   seedsDone: number;
   seedsTotal: number;
+  startedAt: number | null;
+  checkStartedAt: number | null;
+  finishedAt: number | null;
   counts: Record<LinkBucket, number>;
   abortedReason: string | null;
   running: boolean;
@@ -145,6 +148,24 @@ const BUCKET_META: Record<
   },
 };
 
+/** h:mm:ss for a duration that is being watched, mm:ss under an hour. */
+function fmtClock(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
+}
+
+/** Rounded, for a figure nobody reads to the second: "48s", "12m", "2h 05m". */
+function fmtLeft(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 90) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 90) return `${m}m`;
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+}
+
 export function IgLinkFinderPage() {
   const [input, setInput] = useState("");
   const [checkHighlights, setCheckHighlights] = useState(true);
@@ -157,6 +178,9 @@ export function IgLinkFinderPage() {
   const [host, setHost] = useState("");
   const [minFollowers, setMinFollowers] = useState("");
   const [onlySignal, setOnlySignal] = useState(false);
+  // Its own second-by-second tick rather than riding the 1.5s progress poll:
+  // on the poll the displayed seconds would jump 1, 2, 1, 2 and read as broken.
+  const [now, setNow] = useState(() => Date.now());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const pollProgress = useCallback(async () => {
@@ -183,6 +207,13 @@ export function IgLinkFinderPage() {
       pollRef.current = setInterval(pollProgress, 1500);
     }
   }, [progress?.running, pollProgress]);
+
+  useEffect(() => {
+    if (!progress?.running) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [progress?.running]);
 
   async function handleStart() {
     const seeds = input
@@ -310,6 +341,56 @@ export function IgLinkFinderPage() {
         ? "Bio first; highlights only for accounts whose bio is empty"
         : "";
 
+  // The clock reads the server's own start time, so reloading the page in the
+  // middle of a run does not restart it — the run outlives the browser tab.
+  //
+  // The estimate is measured per phase, never across both. Collecting
+  // suggestions and checking accounts run at completely different rates, and an
+  // average over the two would be wrong in whichever phase you happen to be
+  // watching. While collecting, the count of accounts to check is not even
+  // known yet, so the estimate says plainly that it covers this phase only.
+  const startedAt = progress?.startedAt ?? null;
+  const stopStamp = progress?.running ? now : (progress?.finishedAt ?? now);
+  const elapsedMs = startedAt ? stopStamp - startedAt : 0;
+
+  let etaMs: number | null = null;
+  let etaNote = "";
+  if (progress?.running && startedAt) {
+    if (progress.phase === "suggesting" && progress.seedsDone > 0) {
+      etaMs =
+        ((now - startedAt) / progress.seedsDone) *
+        (progress.seedsTotal - progress.seedsDone);
+      etaNote = "collecting only — checking is timed on its own once it starts";
+    } else if (
+      progress.phase === "checking" &&
+      progress.checkStartedAt &&
+      progress.completed > 0
+    ) {
+      etaMs =
+        ((now - progress.checkStartedAt) / progress.completed) *
+        (progress.total - progress.completed);
+    }
+  }
+  const finishClock =
+    etaMs === null
+      ? null
+      : new Date(now + etaMs).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+
+  const runMs =
+    progress?.startedAt && progress?.finishedAt
+      ? progress.finishedAt - progress.startedAt
+      : 0;
+  const checkMs =
+    progress?.finishedAt && progress?.checkStartedAt
+      ? progress.finishedAt - progress.checkStartedAt
+      : 0;
+  const perMin =
+    checkMs > 0 && progress?.total ? (progress.total / (checkMs / 60000)) : 0;
+
+
   return (
     <div className="space-y-6 p-6">
       <div>
@@ -391,7 +472,43 @@ export function IgLinkFinderPage() {
               style={{ width: `${pct}%` }}
             />
           </div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <span>
+              Running{" "}
+              <span className="font-mono text-foreground">{fmtClock(elapsedMs)}</span>
+            </span>
+            {etaMs !== null && (
+              <>
+                <span>
+                  ~<span className="font-mono text-foreground">{fmtLeft(etaMs)}</span>{" "}
+                  left
+                </span>
+                <span>
+                  done around{" "}
+                  <span className="font-mono text-foreground">{finishClock}</span>
+                </span>
+              </>
+            )}
+            {etaNote && <span className="opacity-70">{etaNote}</span>}
+          </div>
         </div>
+      )}
+
+      {!progress?.running && runMs > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Run took{" "}
+          <span className="font-mono text-foreground">{fmtClock(runMs)}</span>
+          {perMin > 0 && (
+            <>
+              {" "}
+              — {progress?.total.toLocaleString("en-US")} accounts checked at{" "}
+              <span className="font-mono text-foreground">
+                {perMin.toFixed(0)}
+              </span>{" "}
+              per minute
+            </>
+          )}
+        </p>
       )}
 
       {progress && progress.results.length > 0 && (

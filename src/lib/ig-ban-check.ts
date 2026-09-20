@@ -1,4 +1,26 @@
 import { fetchProfile } from "./instagram-api";
+import {
+  saveJson,
+  loadJson,
+  readLines,
+  removeFiles,
+  ResultLog,
+} from "./run-state";
+
+/** So a restart cannot take the list of accounts still to check with it. */
+const WORK_FILE = "ban-check-work.json";
+const RESULTS_FILE = "ban-check-results.jsonl";
+
+interface SavedBanWork {
+  usernames: string[];
+  startedAt: number;
+}
+
+export interface ResumableBanCheck {
+  total: number;
+  done: number;
+  remaining: number;
+}
 
 const IG_PROVIDER = (process.env.IG_PROVIDER || "stable").toLowerCase();
 
@@ -11,9 +33,21 @@ const IG_PROVIDER = (process.env.IG_PROVIDER || "stable").toLowerCase();
 // declaring a ban. The stable provider (main tracker) keeps its original,
 // proven-good timings and two-probe confirmation — untouched.
 
-// Delay between consecutive accounts (the profile endpoint itself already
-// retries/backs off on 429/5xx).
-const RATE_DELAY = IG_PROVIDER === "mediacrawlers" ? 1200 : 1300;
+// How many accounts are checked side by side.
+//
+// This used to be one, and the 1.3s pause below was the only thing keeping the
+// app under the plan's 50 calls/minute. Both were standing in for a rate limit
+// that was not enforced anywhere. It is enforced now, in rate-limit.ts, on
+// every call the app makes — so the pool can be sized for throughput and the
+// ceiling is still never crossed.
+const CONCURRENCY = Math.max(1, Number(process.env.IG_BAN_CONCURRENCY) || 20);
+
+// Delay between consecutive accounts on the same worker. Zero by default now
+// that the limiter paces calls globally; kept as a knob because it is the
+// quickest way to back the tool off if the provider ever needs it.
+const RATE_DELAY = Number(
+  process.env.IG_BAN_RATE_DELAY ?? (IG_PROVIDER === "mediacrawlers" ? 1200 : 0),
+);
 // Wait between confirming probes when a "missing" is seen, so transient
 // rate-limit pressure can subside before we trust the signal.
 const RECHECK_DELAY = IG_PROVIDER === "mediacrawlers" ? 4000 : 8000;
@@ -133,30 +167,112 @@ export async function runIgBanCheck(usernames: string[]): Promise<void> {
     results: [],
   };
 
+  await removeFiles(WORK_FILE, RESULTS_FILE);
+  await saveJson(WORK_FILE, {
+    usernames: cleaned,
+    startedAt: Date.now(),
+  } satisfies SavedBanWork);
+
+  await runBatch(cleaned);
+}
+
+/** The loop itself, shared by a fresh run and a resumed one. */
+async function runBatch(cleaned: string[]): Promise<void> {
+  const log = new ResultLog<IgBanCheckResult>(RESULTS_FILE);
+
   try {
-    for (let i = 0; i < cleaned.length; i++) {
-      if (!progress.running) break;
+    // Accounts run side by side; each account's own protocol is untouched.
+    //
+    // The distinction matters, because the old sequential walk is the reason
+    // this checker is trusted. What made parallel probing dangerous was never
+    // parallelism as such — it was going over the per-minute cap, which makes
+    // the provider answer "data not found" for accounts that are alive. That
+    // cap is now enforced in rate-limit.ts for every call the app makes, so a
+    // worker that would overshoot waits there instead of provoking a bad
+    // answer, and the two probes behind a ban stay as independent as they were
+    // when the sequential version was measured correct.
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, cleaned.length) }, async () => {
+        for (;;) {
+          if (!progress.running) return;
+          const i = next++;
+          if (i >= cleaned.length) return;
 
-      const username = cleaned[i];
-      progress.current = username;
+          const username = cleaned[i];
+          progress.current = username;
 
-      const result = await checkProfile(username);
-      progress.results.push(result);
+          const result = await checkProfile(username);
+          progress.results.push(result);
+          log.add(result);
 
-      if (result.status === "alive") progress.alive++;
-      else if (result.status === "banned") progress.banned++;
-      else progress.inconclusive++;
+          if (result.status === "alive") progress.alive++;
+          else if (result.status === "banned") progress.banned++;
+          else progress.inconclusive++;
 
-      progress.completed = i + 1;
+          progress.completed++;
 
-      if (i < cleaned.length - 1 && progress.running) {
-        await new Promise((r) => setTimeout(r, RATE_DELAY));
-      }
-    }
+          if (RATE_DELAY > 0 && progress.running) {
+            await new Promise((r) => setTimeout(r, RATE_DELAY));
+          }
+        }
+      }),
+    );
   } catch (err) {
     console.error("[ig-ban-check] Batch error:", err);
   } finally {
+    await log.flush();
     progress.current = null;
     progress.running = false;
+    // A finished list gives up its state file; a stopped or crashed one keeps
+    // it, which is the whole point of writing it down.
+    if (progress.completed >= progress.total) {
+      await removeFiles(WORK_FILE, RESULTS_FILE);
+    }
   }
+}
+
+/** What an interrupted ban check left behind, if anything. */
+export async function getResumableBanCheck(): Promise<ResumableBanCheck | null> {
+  if (progress.running) return null;
+  const saved = await loadJson<SavedBanWork>(WORK_FILE);
+  if (!saved?.usernames?.length) return null;
+  const done = await readLines<IgBanCheckResult>(RESULTS_FILE);
+  const remaining = saved.usernames.length - done.length;
+  if (remaining <= 0) return null;
+  return { total: saved.usernames.length, done: done.length, remaining };
+}
+
+/** Continue where a restart cut the list off, without re-checking anyone. */
+export async function resumeIgBanCheck(): Promise<boolean> {
+  if (progress.running) return false;
+
+  const saved = await loadJson<SavedBanWork>(WORK_FILE);
+  if (!saved?.usernames?.length) return false;
+
+  const done = await readLines<IgBanCheckResult>(RESULTS_FILE);
+  const answered = new Set(done.map((r) => r.username.toLowerCase()));
+  const remaining = saved.usernames.filter((u) => !answered.has(u.toLowerCase()));
+
+  if (!remaining.length) {
+    await removeFiles(WORK_FILE, RESULTS_FILE);
+    return false;
+  }
+
+  progress = {
+    total: saved.usernames.length,
+    completed: done.length,
+    current: null,
+    alive: done.filter((r) => r.status === "alive").length,
+    banned: done.filter((r) => r.status === "banned").length,
+    inconclusive: done.filter((r) => r.status === "inconclusive").length,
+    running: true,
+    results: [...done],
+  };
+
+  console.log(
+    `[ig-ban-check] Resuming: ${done.length} already answered, ${remaining.length} to go`,
+  );
+  void runBatch(remaining);
+  return true;
 }

@@ -74,6 +74,16 @@ interface FinderProgress {
   abortedReason: string | null;
   running: boolean;
   results: FinderResult[];
+  /** Set while idle when a restart left an unfinished run on disk. */
+  resumable: {
+    total: number;
+    done: number;
+    remaining: number;
+    seedsTotal: number;
+    startedAt: number;
+    checkHighlights: boolean;
+  } | null;
+  rate: { used: number; limit: number };
 }
 
 const BUCKET_ORDER: LinkBucket[] = [
@@ -234,6 +244,19 @@ export function IgLinkFinderPage() {
       if (pollRef.current) clearInterval(pollRef.current);
       pollRef.current = setInterval(pollProgress, 1500);
       pollProgress();
+    }
+  }
+
+  async function handleResume() {
+    const res = await fetch("/api/ig-link-finder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resume: true }),
+    });
+    if (res.ok) {
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = setInterval(pollProgress, 1500);
+      void pollProgress();
     }
   }
 
@@ -455,6 +478,32 @@ export function IgLinkFinderPage() {
         </div>
       )}
 
+      {!progress?.running && progress?.resumable && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-4 py-3">
+          <p className="text-sm">
+            <span className="font-medium text-amber-400">
+              An unfinished run is on disk.
+            </span>{" "}
+            {progress.resumable.done.toLocaleString("en-US")} of{" "}
+            {progress.resumable.total.toLocaleString("en-US")} accounts were
+            answered before it stopped;{" "}
+            <span className="font-medium">
+              {progress.resumable.remaining.toLocaleString("en-US")}
+            </span>{" "}
+            are left.
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Resuming reuses the saved candidate list — the{" "}
+            {progress.resumable.seedsTotal.toLocaleString("en-US")} seeds are not
+            fetched again, and no account is paid for twice.
+          </p>
+          <Button size="sm" className="mt-2" onClick={handleResume}>
+            <Play className="size-4" />
+            Resume {progress.resumable.remaining.toLocaleString("en-US")} remaining
+          </Button>
+        </div>
+      )}
+
       {progress?.running && (
         <div className="space-y-2">
           <div className="flex items-center justify-between text-sm">
@@ -488,6 +537,15 @@ export function IgLinkFinderPage() {
                   <span className="font-mono text-foreground">{finishClock}</span>
                 </span>
               </>
+            )}
+            {progress.rate && (
+              <span>
+                API{" "}
+                <span className="font-mono text-foreground">
+                  {progress.rate.used}
+                </span>
+                /{progress.rate.limit} per min
+              </span>
             )}
             {etaNote && <span className="opacity-70">{etaNote}</span>}
           </div>

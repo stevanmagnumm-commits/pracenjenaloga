@@ -9,6 +9,8 @@ import type {
 // IG-specific key override: lets an instance point Instagram at a different
 // RapidAPI subscription than TikTok/Threads (which keep using RAPIDAPI_KEY).
 // Falls back to RAPIDAPI_KEY when unset, so existing instances are unchanged.
+import { acquireApiSlot } from "./rate-limit";
+
 const RAPIDAPI_KEY = process.env.IG_RAPIDAPI_KEY || process.env.RAPIDAPI_KEY!;
 const RAPIDAPI_HOST = process.env.RAPIDAPI_HOST || "instagram-scraper-stable-api.p.rapidapi.com";
 const BASE_URL = `https://${RAPIDAPI_HOST}`;
@@ -160,6 +162,7 @@ async function readJsonBody(response: Response): Promise<JsonOutcome> {
 }
 
 async function fetchWithDeadline(url: string, init: RequestInit): Promise<FetchOutcome> {
+  await acquireApiSlot();
   try {
     const response = await fetch(url, {
       ...init,

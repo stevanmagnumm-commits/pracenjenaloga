@@ -38,6 +38,9 @@ interface CheckProgress {
   inconclusive: number;
   running: boolean;
   results: BanCheckResult[];
+  /** Set while idle when a restart left an unfinished list on disk. */
+  resumable: { total: number; done: number; remaining: number } | null;
+  rate: { used: number; limit: number };
 }
 
 type FilterMode = "all" | "alive" | "banned" | "inconclusive";
@@ -89,6 +92,19 @@ export function IgBanCheckerPage() {
       if (pollRef.current) clearInterval(pollRef.current);
       pollRef.current = setInterval(pollProgress, 1500);
       pollProgress();
+    }
+  }
+
+  async function handleResume() {
+    const res = await fetch("/api/ig-ban-check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resume: true }),
+    });
+    if (res.ok) {
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = setInterval(pollProgress, 1500);
+      void pollProgress();
     }
   }
 
@@ -195,6 +211,27 @@ export function IgBanCheckerPage() {
           </span>
         </div>
       </div>
+
+      {!progress?.running && progress?.resumable && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-4 py-3">
+          <p className="text-sm">
+            <span className="font-medium text-amber-400">
+              An unfinished check is on disk.
+            </span>{" "}
+            {progress.resumable.done.toLocaleString("en-US")} of{" "}
+            {progress.resumable.total.toLocaleString("en-US")} accounts were
+            answered before it stopped;{" "}
+            <span className="font-medium">
+              {progress.resumable.remaining.toLocaleString("en-US")}
+            </span>{" "}
+            are left. Resuming checks nobody twice.
+          </p>
+          <Button size="sm" className="mt-2" onClick={handleResume}>
+            <Play className="mr-1.5 size-4" />
+            Resume {progress.resumable.remaining.toLocaleString("en-US")} remaining
+          </Button>
+        </div>
+      )}
 
       {progress?.running && (
         <div className="space-y-2">

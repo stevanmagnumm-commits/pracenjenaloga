@@ -3,7 +3,10 @@ import {
   runIgViewsCheck,
   getIgViewsCheckProgress,
   stopIgViewsCheck,
+  getResumableViewsCheck,
+  resumeIgViewsCheck,
 } from "@/lib/ig-views-check";
+import { getApiRateUsage } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +19,19 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { usernames } = (await request.json()) as { usernames: string[] };
+  const { usernames, resume } = (await request.json()) as {
+    usernames?: string[];
+    resume?: boolean;
+  };
+
+  // Continue a list a restart cut off, without re-grading anyone.
+  if (resume) {
+    const started = await resumeIgViewsCheck();
+    if (!started) {
+      return NextResponse.json({ error: "Nothing to resume" }, { status: 409 });
+    }
+    return NextResponse.json({ message: "Resumed", progress: getIgViewsCheckProgress() });
+  }
 
   if (!usernames?.length) {
     return NextResponse.json({ error: "Usernames required" }, { status: 400 });
@@ -32,9 +47,14 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET() {
-  return NextResponse.json(getIgViewsCheckProgress(), {
-    headers: { "Cache-Control": "no-store, max-age=0" },
-  });
+  return NextResponse.json(
+    {
+      ...getIgViewsCheckProgress(),
+      resumable: await getResumableViewsCheck(),
+      rate: getApiRateUsage(),
+    },
+    { headers: { "Cache-Control": "no-store, max-age=0" } },
+  );
 }
 
 export async function DELETE() {

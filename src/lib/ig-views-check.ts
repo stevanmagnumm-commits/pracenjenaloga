@@ -7,6 +7,29 @@ import {
   type ViewBucket,
 } from "./view-buckets";
 
+import {
+  saveJson,
+  loadJson,
+  readLines,
+  removeFiles,
+  ResultLog,
+} from "./run-state";
+
+/** So a restart cannot take the list of accounts still to grade with it. */
+const WORK_FILE = "views-check-work.json";
+const RESULTS_FILE = "views-check-results.jsonl";
+
+interface SavedViewsWork {
+  usernames: string[];
+  startedAt: number;
+}
+
+export interface ResumableViewsCheck {
+  total: number;
+  done: number;
+  remaining: number;
+}
+
 /**
  * Standalone "how are these accounts performing" checker.
  *
@@ -27,7 +50,7 @@ import {
  *    up being the length of pass 1 — far more separation than the 8s the Ban
  *    Checker settles for, and without any worker sitting idle.
  *
- * Cost per account, which matters because the plan allows only 50 calls/minute:
+ * Cost per account (the plan allows 300 calls/minute, enforced in rate-limit.ts):
  * a banned account is 2 profile calls, an empty one 1 profile + 1 reels, a live
  * one 1 profile + 3 reels (36 reels = 3 pages).
  *
@@ -35,7 +58,7 @@ import {
  * ---------------------------------------------------
  * The reels endpoint lies in two ways, both measured live. It returns an empty
  * array on HTTP 200 for accounts that answer with 12 reels seconds later; and
- * when the plan's 50-calls-per-minute cap is hit it answers HTTP 200 with
+ * when the plan per-minute cap is hit it answers HTTP 200 with
  * {"message":"You have exceeded the rate limit..."}, which has no `reels` key
  * and used to be read as "this account has no reels". On a 308-account run that
  * produced 239 "No data" rows; a direct probe of a sample found 40% of them
@@ -85,13 +108,18 @@ export interface ViewsCheckProgress {
 
 // How many accounts are in flight against RapidAPI at once.
 //
-// This is NOT a free knob. The plan is capped at 50 calls/minute, and six
-// workers were measured on a live 174-account run at 40 calls/minute — 80% of
-// the ceiling, with zero 429s. So there is a little headroom and no more:
-// pushing the pool much higher buys "you have exceeded the rate limit" bodies,
-// which is the answer that used to be misread as "this account has no reels".
-// Wall-clock is won by spending fewer calls per account, not by more workers.
-const CONCURRENCY = Math.max(1, Number(process.env.IG_VIEWS_CONCURRENCY) || 6);
+// This was six for a long time, and six was right while the plan allowed 50
+// calls a minute and nothing in the code enforced that ceiling — the pool size
+// WAS the rate limit, and overshooting it bought "you have exceeded the rate
+// limit" bodies, which were misread as "this account has no reels".
+//
+// Both halves of that have changed. The plan now allows 300 a minute, and
+// rate-limit.ts enforces a real ceiling on every call the app makes, so the
+// pool no longer stands in for one. Sized from the arithmetic instead: the
+// budget divided by the measured ~8.6s a call takes is about forty in flight to
+// keep it full. Going higher is harmless but pointless — the extra workers
+// would simply queue at the limiter.
+const CONCURRENCY = Math.max(1, Number(process.env.IG_VIEWS_CONCURRENCY) || 40);
 
 // Extra reels attempts for an account confirmed alive. fetchLatestStubs already
 // retries an empty first page once internally, so this sits on top of that.
@@ -109,19 +137,25 @@ const EMPTY_REELS_DELAY = 3_000;
 // accounts that are perfectly alive. Two confirmations taken under the same
 // pressure fail together — confirmation without independence confirms nothing.
 //
-// So the confirmation pass now copies ig-ban-check.ts exactly: sequential, one
-// account at a time, RATE_DELAY between accounts, BAN_CONFIRMATIONS consecutive
-// "not found" answers spaced RECHECK_DELAY apart, a single "alive" clears the
-// account, and anything unclear stops the probing and returns unclear — never a
-// ban. Those numbers are not guesses; that configuration was measured correct on
-// these very accounts today.
+// The cure was to copy ig-ban-check.ts exactly, including its sequential walk.
+// Read that paragraph again, though: the two tools "do not differ in logic;
+// they differ in LOAD". Sequential was how load was kept down, not the point in
+// itself — and load is now held down directly, by rate-limit.ts, on every call
+// the app makes.
 //
-// Cost: roughly 10-20s per parked account, single file. Discovery stays
-// parallel — only the judgement is slow.
+// So the pass runs several accounts side by side again, and what actually
+// protects the verdict is kept exactly as measured: BAN_CONFIRMATIONS
+// consecutive "not found" answers spaced RECHECK_DELAY apart, a single "alive"
+// clears the account, anything unclear stops the probing and returns unclear —
+// never a ban. Those are the numbers that were measured correct on these very
+// accounts, and none of them have moved.
+//
+// If false bans ever reappear, this is the first place to look, and
+// IG_CONFIRM_CONCURRENCY=1 restores the old behaviour without a deploy.
 const BAN_CONFIRMATIONS = 2;
 const RECHECK_DELAY = 8_000;
-const CONFIRM_CONCURRENCY = 1;
-const CONFIRM_RATE_DELAY = 1_300;
+const CONFIRM_CONCURRENCY = Math.max(1, Number(process.env.IG_CONFIRM_CONCURRENCY) || 12);
+const CONFIRM_RATE_DELAY = Number(process.env.IG_CONFIRM_RATE_DELAY ?? 0);
 
 function freshProgress(total: number, running: boolean): ViewsCheckProgress {
   return {
@@ -401,17 +435,46 @@ export async function runIgViewsCheck(usernames: string[]): Promise<void> {
     ),
   ];
 
+  await removeFiles(WORK_FILE, RESULTS_FILE);
+  await saveJson(WORK_FILE, {
+    usernames: cleaned,
+    startedAt: Date.now(),
+  } satisfies SavedViewsWork);
+
+  await gradeBatch(cleaned, cleaned.length, []);
+}
+
+/**
+ * The two passes themselves, shared by a fresh run and a resumed one.
+ *
+ * `total` and `already` exist so a resume can show the whole job rather than
+ * just its tail: the accounts answered before the restart are replayed into the
+ * results, and only the unanswered ones are actually paid for again.
+ */
+async function gradeBatch(
+  cleaned: string[],
+  total: number,
+  already: ViewsCheckResult[],
+): Promise<void> {
   const myToken = ++runToken;
   quotaAbort = null;
   const isActive = () => progress.running && runToken === myToken && !quotaAbort;
 
-  progress = freshProgress(cleaned.length, true);
+  progress = freshProgress(total, true);
+  const log = new ResultLog<ViewsCheckResult>(RESULTS_FILE);
+
+  for (const r of already) {
+    progress.results.push(r);
+    if (r.bucket in progress.counts) progress.counts[r.bucket]++;
+  }
+  progress.completed = already.length;
 
   const finalize = (result: ViewsCheckResult) => {
     if (!isActive()) return;
     progress.results.push(result);
     progress.counts[result.bucket]++;
     progress.completed++;
+    log.add(result);
   };
 
   try {
@@ -432,14 +495,15 @@ export async function runIgViewsCheck(usernames: string[]): Promise<void> {
       }
     });
 
-    // Pass 2 — the verdict, at the Ban Checker's pace: CONFIRM_CONCURRENCY (1)
-    // account at a time with CONFIRM_RATE_DELAY between them. Running this in
-    // parallel is precisely what produced 52% false bans; the slowness is the
-    // feature.
+    // Pass 2 — the verdict. Several accounts at once, but each one still has to
+    // produce BAN_CONFIRMATIONS "not found" answers RECHECK_DELAY apart before
+    // it is called banned. The per-minute ceiling that made parallel probing
+    // dangerous is enforced in rate-limit.ts now, not approximated by keeping
+    // this pass slow.
     if (parked.length && isActive()) {
       progress.phase = "confirming";
       console.log(
-        `[ig-views-check] Pass 2: confirming ${parked.length} accounts one at a time`,
+        `[ig-views-check] Pass 2: confirming  accounts,  at a time`,
       );
       await pool(parked, CONFIRM_CONCURRENCY, isActive, async (job) => {
         progress.current = job.username;
@@ -456,6 +520,7 @@ export async function runIgViewsCheck(usernames: string[]): Promise<void> {
   } catch (err) {
     console.error("[ig-views-check] Batch error:", err);
   } finally {
+    await log.flush();
     if (runToken === myToken) {
       progress.current = null;
       progress.running = false;
@@ -463,6 +528,9 @@ export async function runIgViewsCheck(usernames: string[]): Promise<void> {
       progress.pending = 0;
       progress.parked = [];
       progress.abortedReason = quotaAbort;
+      if (progress.completed >= progress.total) {
+        await removeFiles(WORK_FILE, RESULTS_FILE);
+      }
       const c = progress.counts;
       console.log(
         `[ig-views-check] Done. <100: ${c.under100}, 100-200: ${c.mid}, 200+: ${c.over200}, ` +
@@ -470,4 +538,45 @@ export async function runIgViewsCheck(usernames: string[]): Promise<void> {
       );
     }
   }
+}
+
+
+/** What an interrupted views check left behind, if anything. */
+export async function getResumableViewsCheck(): Promise<ResumableViewsCheck | null> {
+  if (progress.running) return null;
+  const saved = await loadJson<SavedViewsWork>(WORK_FILE);
+  if (!saved?.usernames?.length) return null;
+  const done = await readLines<ViewsCheckResult>(RESULTS_FILE);
+  const remaining = saved.usernames.length - done.length;
+  if (remaining <= 0) return null;
+  return { total: saved.usernames.length, done: done.length, remaining };
+}
+
+/**
+ * Continue where a restart cut the list off. Accounts already graded are
+ * replayed, not re-fetched; only the ones never answered for cost anything.
+ * An account that was parked for the confirmation pass when the process died
+ * is simply graded again from the top, which is correct — it never got a
+ * verdict, and the first pass is what produces one.
+ */
+export async function resumeIgViewsCheck(): Promise<boolean> {
+  if (progress.running) return false;
+
+  const saved = await loadJson<SavedViewsWork>(WORK_FILE);
+  if (!saved?.usernames?.length) return false;
+
+  const done = await readLines<ViewsCheckResult>(RESULTS_FILE);
+  const answered = new Set(done.map((r) => r.username.toLowerCase()));
+  const remaining = saved.usernames.filter((u) => !answered.has(u.toLowerCase()));
+
+  if (!remaining.length) {
+    await removeFiles(WORK_FILE, RESULTS_FILE);
+    return false;
+  }
+
+  console.log(
+    `[ig-views-check] Resuming: ${done.length} already graded, ${remaining.length} to go`,
+  );
+  void gradeBatch(remaining, saved.usernames.length, done);
+  return true;
 }

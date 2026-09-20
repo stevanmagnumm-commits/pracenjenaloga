@@ -14,6 +14,35 @@ import {
   hasForeignScript,
 } from "./link-signals";
 
+import {
+  saveJson,
+  loadJson,
+  readLines,
+  removeFiles,
+  ResultLog,
+} from "./run-state";
+
+/** Names of the two files a run leaves behind so a restart can pick it up. */
+const WORK_FILE = "link-finder-work.json";
+const RESULTS_FILE = "link-finder-results.jsonl";
+
+interface SavedWork {
+  seeds: string[];
+  checkHighlights: boolean;
+  work: Candidate[];
+  startedAt: number;
+  seedsTotal: number;
+}
+
+export interface ResumableRun {
+  total: number;
+  done: number;
+  remaining: number;
+  seedsTotal: number;
+  startedAt: number;
+  checkHighlights: boolean;
+}
+
 /**
  * From a seed account, find the accounts Instagram suggests as similar, and
  * report which of them are running a link — in the bio, or on a link sticker
@@ -103,7 +132,7 @@ export interface LinkFinderProgress {
   results: LinkFinderResult[];
 }
 
-const CONCURRENCY = Math.max(1, Number(process.env.IG_LINK_CONCURRENCY) || 4);
+const CONCURRENCY = Math.max(1, Number(process.env.IG_LINK_CONCURRENCY) || 40);
 
 // Highlights are the expensive half — measured at 86% of a run's API calls, so
 // every one opened has to earn it. Two, not four: all three accounts examined by
@@ -476,26 +505,27 @@ export async function runLinkFinder(
   ];
   if (!cleanSeeds.length) return;
 
+
   const myToken = ++runToken;
   quotaAbort = null;
-  const isActive = () => progress.running && runToken === myToken && !quotaAbort;
 
   progress = freshProgress(true, cleanSeeds.length);
+  await removeFiles(WORK_FILE, RESULTS_FILE);
 
-  const finalize = (r: LinkFinderResult) => {
-    if (!isActive()) return;
-    progress.results.push(r);
-    progress.counts[r.bucket]++;
-    progress.completed++;
-  };
+  const isActive = () => progress.running && runToken === myToken && !quotaAbort;
 
   try {
     // Phase 1 — collect suggestions. One call per seed, ~80 accounts each.
+    //
+    // Seeds now run through the same pool as the checking phase. They used to
+    // go one at a time with a 400ms pause, which on a 1,444-seed run meant
+    // 2.4 hours of wall clock spent almost entirely waiting — 4 calls a minute
+    // against a budget of 280. The pause was there to stay under a cap that is
+    // now enforced properly in rate-limit.ts.
     const seen = new Set(cleanSeeds);
     const candidates: Candidate[] = [];
 
-    for (const seed of cleanSeeds) {
-      if (!isActive()) break;
+    await pool(cleanSeeds, CONCURRENCY, isActive, async (seed) => {
       progress.current = seed;
       try {
         const suggested = await fetchSimilarAccounts(seed);
@@ -511,25 +541,60 @@ export async function runLinkFinder(
             isVerified: s.isVerified,
           });
         }
-        console.log(`[ig-link-finder] @${seed} -> ${suggested.length} suggestions`);
       } catch (err) {
         noteIfQuotaDead(err);
         console.error(`[ig-link-finder] seed @${seed}:`, err instanceof Error ? err.message : err);
       }
       progress.seedsDone++;
-      await sleep(400);
-    }
+    });
 
     const work = candidates.slice(0, maxCandidates);
-    progress.total = work.length;
-    progress.phase = "checking";
-    progress.checkStartedAt = Date.now();
     console.log(
       `[ig-link-finder] ${work.length} candidates from ${cleanSeeds.length} seed(s); ` +
         `highlights ${checkHighlights ? "on" : "off"}`,
     );
 
-    // Phase 2 — inspect each candidate.
+    // On disk before the first account is checked. This is the file whose
+    // absence cost a 61%-complete run its remaining 17,362 targets.
+    await saveJson(WORK_FILE, {
+      seeds: cleanSeeds,
+      checkHighlights,
+      work,
+      startedAt: progress.startedAt ?? Date.now(),
+      seedsTotal: cleanSeeds.length,
+    } satisfies SavedWork);
+
+    await checkPhase(work, checkHighlights, myToken);
+  } catch (err) {
+    console.error("[ig-link-finder] Batch error:", err);
+    finishRun(myToken);
+  }
+}
+
+/**
+ * Phase 2 — inspect each candidate. Shared by a fresh run and a resumed one, so
+ * the two cannot drift apart in behaviour.
+ */
+async function checkPhase(
+  work: Candidate[],
+  checkHighlights: boolean,
+  myToken: number,
+): Promise<void> {
+  const isActive = () => progress.running && runToken === myToken && !quotaAbort;
+  const log = new ResultLog<LinkFinderResult>(RESULTS_FILE);
+
+  progress.phase = "checking";
+  progress.checkStartedAt = Date.now();
+
+  const finalize = (r: LinkFinderResult) => {
+    if (!isActive()) return;
+    progress.results.push(r);
+    if (r.bucket in progress.counts) progress.counts[r.bucket]++;
+    progress.completed++;
+    log.add(r);
+  };
+
+  try {
     await pool(work, CONCURRENCY, isActive, async (cand) => {
       progress.current = cand.username;
       const result = await withDeadline(
@@ -558,19 +623,92 @@ export async function runLinkFinder(
       finalize(result);
     });
   } catch (err) {
-    console.error("[ig-link-finder] Batch error:", err);
+    console.error("[ig-link-finder] Check phase error:", err);
   } finally {
-    if (runToken === myToken) {
-      progress.current = null;
-      progress.running = false;
-      progress.phase = "done";
-      progress.finishedAt = Date.now();
-      progress.abortedReason = quotaAbort;
-      const c = progress.counts;
-      console.log(
-        `[ig-link-finder] Done. bio: ${c.bio}, signal: ${c.signal}, hlname: ${c.hlname}, ` +
-          `story: ${c.story}, none: ${c.none}, private: ${c.private}, failed: ${c.failed}`,
-      );
+    await log.flush();
+    const completed = finishRun(myToken);
+    // Only a run that actually reached the end of its work list gives up its
+    // state file. A stop, a crash or a quota abort keeps it, so it can resume.
+    if (completed && progress.completed >= progress.total) {
+      await removeFiles(WORK_FILE, RESULTS_FILE);
     }
   }
+}
+
+function finishRun(myToken: number): boolean {
+  if (runToken !== myToken) return false;
+  progress.current = null;
+  progress.running = false;
+  progress.phase = "done";
+  progress.finishedAt = Date.now();
+  progress.abortedReason = quotaAbort;
+  const c = progress.counts;
+  console.log(
+    `[ig-link-finder] Done. bio: ${c.bio}, signal: ${c.signal}, hlname: ${c.hlname}, ` +
+      `story: ${c.story}, none: ${c.none}, private: ${c.private}, failed: ${c.failed}`,
+  );
+  return true;
+}
+
+/**
+ * What a restart left behind, if anything — the figures the UI needs to offer a
+ * resume. Null when there is nothing to continue.
+ */
+export async function getResumableRun(): Promise<ResumableRun | null> {
+  if (progress.running) return null;
+  const saved = await loadJson<SavedWork>(WORK_FILE);
+  if (!saved?.work?.length) return null;
+  const done = await readLines<LinkFinderResult>(RESULTS_FILE);
+  const remaining = saved.work.length - done.length;
+  if (remaining <= 0) return null;
+  return {
+    total: saved.work.length,
+    done: done.length,
+    remaining,
+    seedsTotal: saved.seedsTotal,
+    startedAt: saved.startedAt,
+    checkHighlights: saved.checkHighlights,
+  };
+}
+
+/**
+ * Pick an interrupted run back up. The suggestions are not fetched again — the
+ * whole point — and the accounts already answered for are replayed into the
+ * results so the screen and the download are whole, not just the tail.
+ */
+export async function resumeLinkFinder(): Promise<boolean> {
+  if (progress.running) return false;
+
+  const saved = await loadJson<SavedWork>(WORK_FILE);
+  if (!saved?.work?.length) return false;
+
+  const done = await readLines<LinkFinderResult>(RESULTS_FILE);
+  const answered = new Set(done.map((r) => r.username.toLowerCase()));
+  const remaining = saved.work.filter((c) => !answered.has(c.username.toLowerCase()));
+
+  if (!remaining.length) {
+    await removeFiles(WORK_FILE, RESULTS_FILE);
+    return false;
+  }
+
+  const myToken = ++runToken;
+  quotaAbort = null;
+
+  progress = freshProgress(true, saved.seedsTotal);
+  progress.startedAt = saved.startedAt; // the original clock, not this restart
+  progress.seedsDone = saved.seedsTotal; // collecting is behind us
+  progress.total = saved.work.length;
+
+  for (const r of done) {
+    progress.results.push(r);
+    if (r.bucket in progress.counts) progress.counts[r.bucket]++;
+  }
+  progress.completed = done.length;
+
+  console.log(
+    `[ig-link-finder] Resuming: ${done.length} already answered, ${remaining.length} to go`,
+  );
+
+  void checkPhase(remaining, saved.checkHighlights, myToken);
+  return true;
 }

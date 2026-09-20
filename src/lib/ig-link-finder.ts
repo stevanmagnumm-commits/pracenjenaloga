@@ -546,9 +546,13 @@ export async function runLinkFinder(
         console.error(`[ig-link-finder] seed @${seed}:`, err instanceof Error ? err.message : err);
       }
       progress.seedsDone++;
+      // Visible while collecting, so the screen shows the pile growing rather
+      // than 0 until the whole phase ends.
+      progress.total = candidates.length;
     });
 
     const work = candidates.slice(0, maxCandidates);
+    progress.total = work.length;
     console.log(
       `[ig-link-finder] ${work.length} candidates from ${cleanSeeds.length} seed(s); ` +
         `highlights ${checkHighlights ? "on" : "off"}`,

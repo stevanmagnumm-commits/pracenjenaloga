@@ -387,7 +387,13 @@ export function IgLinkFinderPage() {
     } else if (
       progress.phase === "checking" &&
       progress.checkStartedAt &&
-      progress.completed > 0
+      progress.completed > 0 &&
+      // Guard, because the alternative is a confident lie. A run whose total
+      // had been lost reported completed=207 against total=0, which makes the
+      // remainder negative, which the formatter clamped to "0s left" and
+      // "done around" the current minute — a finish time that was wrong all
+      // the way through a run. No total, no estimate.
+      progress.total > progress.completed
     ) {
       etaMs =
         ((now - progress.checkStartedAt) / progress.completed) *

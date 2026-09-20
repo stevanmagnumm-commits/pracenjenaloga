@@ -41,18 +41,37 @@ function trim(now: number): void {
   while (window.length && now - window[0] >= WINDOW_MS) window.shift();
 }
 
+/** Issue time of the most recent call, for the even-spacing rule below. */
+let lastIssue = 0;
+
 /** Blocks until this call is within budget, then records it. */
 export function acquireApiSlot(): Promise<void> {
   const mine = gate.then(async () => {
     for (;;) {
       const now = Date.now();
       trim(now);
-      if (window.length < limit) {
-        window.push(now);
-        return;
+
+      if (window.length >= limit) {
+        // Full — wait exactly until the oldest call falls out of the window.
+        await new Promise((r) => setTimeout(r, WINDOW_MS - (now - window[0]) + 5));
+        continue;
       }
-      // Full — wait exactly until the oldest call falls out of the window.
-      await new Promise((r) => setTimeout(r, WINDOW_MS - (now - window[0]) + 5));
+
+      // Even spacing, and not a nicety: the window alone lets forty workers
+      // spend the whole minute's budget in one burst, after which every one of
+      // them blocks until the oldest call ages out. That is up to a full minute
+      // in which the app does nothing at all, and watching it, it reads as a
+      // freeze rather than as pacing. Holding one call per (minute / limit)
+      // spends the same budget at the same ceiling without ever stopping.
+      const wait = lastIssue + WINDOW_MS / limit - now;
+      if (wait > 0) {
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+
+      lastIssue = now;
+      window.push(now);
+      return;
     }
   });
   gate = mine.catch(() => {});
@@ -69,5 +88,6 @@ export function getApiRateUsage(): { used: number; limit: number } {
 export function __setApiRateLimitForTest(next: number): void {
   limit = Math.max(1, next);
   window = [];
+  lastIssue = 0;
   gate = Promise.resolve();
 }

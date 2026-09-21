@@ -13,31 +13,35 @@ import { appendLines, readLines, saveJsonl } from "./run-state";
  * is skipped that would have produced a new result, because the result is
  * already in hand.
  *
- * Not everything keeps, though. A verdict is cached for as long as it is likely
- * to still be true, which is very different per bucket — an account written in
- * Cyrillic will not be writing in Latin next month, while one with an empty bio
- * may well have added a link.
+ * A verdict is held for seven days and then forgotten, so the account comes
+ * back into a later run as new rather than being excluded on the strength of a
+ * stale answer. Nothing is remembered forever: an account with an empty bio
+ * today may add a link, one just under the follower floor may grow past it, and
+ * a week is short enough that neither goes unnoticed for long.
+ *
+ * The saving therefore applies to runs within a week of each other, which is
+ * how these are actually run — the two that were measured were a day apart.
  */
 
 const DAY = 86_400_000;
-const FOREVER = Number.POSITIVE_INFINITY;
 
-const TTL_MS: Record<string, number> = {
-  // Already qualified — we have the account, there is nothing left to learn.
-  bio: FOREVER,
-  signal: FOREVER,
-  hlname: FOREVER,
-  story: FOREVER,
-  // The script an account writes in does not change.
-  wrongscript: FOREVER,
-  // Follower counts drift, but not from 9k to 10k in a week.
-  outofrange: 30 * DAY,
-  // The one that can genuinely turn good later: a link added to an empty bio.
-  none: 30 * DAY,
-  // A private account may open up.
-  private: 14 * DAY,
-};
-// "failed" is absent on purpose: it is not an answer, so it is never cached.
+/** How long a verdict is trusted. One week, for every bucket alike. */
+const TTL_MS = Math.max(1, Number(process.env.IG_SEEN_TTL_DAYS) || 7) * DAY;
+
+/**
+ * "failed" is deliberately absent: it is the absence of an answer, not an
+ * answer, so it is never recorded and never suppresses a later attempt.
+ */
+const CACHED_BUCKETS = new Set([
+  "bio",
+  "signal",
+  "hlname",
+  "story",
+  "wrongscript",
+  "outofrange",
+  "none",
+  "private",
+]);
 
 const FILE = "seen-accounts.jsonl";
 
@@ -60,17 +64,31 @@ async function load(): Promise<void> {
   if (loading) return loading;
   loading = (async () => {
     const rows = await readLines<SeenRow>(FILE);
+    const cutoff = Date.now() - TTL_MS;
     const map = new Map<string, SeenRow>();
+    let expired = 0;
     // Append-only, so a later line supersedes an earlier one for the same user.
     for (const r of rows) {
-      if (r && typeof r.u === "string") map.set(r.u, r);
+      if (!r || typeof r.u !== "string") continue;
+      // Dropped on the way in, not merely ignored on lookup. With a fixed
+      // expiry the log would otherwise grow without bound, and every restart
+      // would pay to read a year of answers nobody is allowed to use.
+      if (!(r.t > cutoff)) {
+        expired++;
+        map.delete(r.u);
+        continue;
+      }
+      map.set(r.u, r);
     }
     linesOnDisk = rows.length;
     store = map;
-    console.log(`[seen] ${map.size} accounts known (${rows.length} lines)`);
-    // Duplicates accumulate as accounts are re-recorded; rewrite once the log
-    // is mostly history rather than content.
-    if (rows.length > map.size * 2 && map.size > 0) {
+    console.log(
+      `[seen] ${map.size} accounts within ${TTL_MS / 86_400_000}d ` +
+        `(${rows.length} lines read, ${expired} expired)`,
+    );
+    // Rewrite once the log is mostly history rather than content — expired
+    // rows and superseded duplicates both count as history.
+    if (map.size > 0 && rows.length > map.size * 1.5) {
       await saveJsonl(FILE, [...map.values()]);
       linesOnDisk = map.size;
       console.log(`[seen] compacted ${rows.length} lines to ${map.size}`);
@@ -93,15 +111,14 @@ export async function primeSeen(): Promise<number> {
 export function seenBefore(username: string): SeenRow | null {
   const row = store?.get(username.toLowerCase());
   if (!row) return null;
-  const ttl = TTL_MS[row.b];
-  if (ttl === undefined) return null; // never cached (failed), or an old bucket name
-  if (ttl !== FOREVER && Date.now() - row.t > ttl) return null;
+  if (!CACHED_BUCKETS.has(row.b)) return null;
+  if (Date.now() - row.t > TTL_MS) return null;
   return row;
 }
 
 /** Remember a verdict. Buckets with no shelf life are not recorded at all. */
 export function recordSeen(username: string, bucket: string): void {
-  if (TTL_MS[bucket] === undefined) return;
+  if (!CACHED_BUCKETS.has(bucket)) return;
   const row: SeenRow = { u: username.toLowerCase(), b: bucket, t: Date.now() };
   store?.set(row.u, row);
   pending.push(row);

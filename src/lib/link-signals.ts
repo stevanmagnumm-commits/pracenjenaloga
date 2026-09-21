@@ -126,6 +126,27 @@ export function hasForeignScript(text: string): boolean {
   return !!text && FOREIGN_SCRIPT.test(text);
 }
 
+
+/**
+ * Highlight names that mark the account as Spanish- or Portuguese-speaking.
+ *
+ * These are an exclusion, not a signal, and that is the opposite of how "aqui"
+ * first looked: it was the strongest qualifying name in the whole dataset, 184
+ * hits to 46 and 17 to 0 on the clean sample. It qualifies so well precisely
+ * because it is "click here" in another language — the same intent as our
+ * `click` and `here`, on accounts funnelling to privacy.com.br and paylume.fans
+ * rather than to an English-speaking audience. Strong evidence of a funnel, and
+ * of a funnel this search does not want.
+ *
+ * Checked BEFORE the qualifying names, so an account whose highlight reads
+ * "Link Aqui 🔥" is dropped rather than admitted on the word "link".
+ */
+export const FOREIGN_LANG_HIGHLIGHT = /aqu[ií]/i;
+
+export function hasForeignLangHighlight(titles: string[]): boolean {
+  return titles.some((t) => FOREIGN_LANG_HIGHLIGHT.test(t || ""));
+}
+
 export function matchSignals(text: string, signals: Signal[]): string[] {
   if (!text) return [];
   return signals.filter((s) => s.re.test(text)).map((s) => s.label);

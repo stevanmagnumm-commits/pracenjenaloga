@@ -20,6 +20,7 @@ import {
   BadgeCheck,
   UserMinus,
   Languages,
+  Globe,
   History,
   BookmarkCheck,
 } from "lucide-react";
@@ -42,6 +43,7 @@ type LinkBucket =
   | "known"
   | "outofrange"
   | "wrongscript"
+  | "wronglang"
   | "seen"
   | "none"
   | "private"
@@ -98,6 +100,7 @@ const BUCKET_ORDER: LinkBucket[] = [
   "known",
   "outofrange",
   "wrongscript",
+  "wronglang",
   "seen",
   "none",
   "private",
@@ -141,6 +144,12 @@ const BUCKET_META: Record<
   outofrange: {
     label: "Out of range",
     icon: UserMinus,
+    badgeCls: "bg-zinc-500/15 text-zinc-500",
+    textCls: "text-zinc-500",
+  },
+  wronglang: {
+    label: "Foreign language",
+    icon: Globe,
     badgeCls: "bg-zinc-500/15 text-zinc-500",
     textCls: "text-zinc-500",
   },

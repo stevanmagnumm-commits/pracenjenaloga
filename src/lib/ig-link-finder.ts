@@ -12,6 +12,7 @@ import {
   matchSignals,
   isFunnelHighlightTitle,
   hasForeignScript,
+  hasForeignLangHighlight,
 } from "./link-signals";
 
 import {
@@ -87,6 +88,7 @@ export type LinkBucket =
   | "story"
   | "outofrange"
   | "wrongscript"
+  | "wronglang"
   | "seen"
   | "known"
   | "none"
@@ -190,6 +192,7 @@ function emptyCounts(): Record<LinkBucket, number> {
     story: 0,
     outofrange: 0,
     wrongscript: 0,
+    wronglang: 0,
     seen: 0,
     known: 0,
     none: 0,
@@ -445,6 +448,20 @@ async function inspect(
 
     let highlights = await fetchHighlights(cand.username);
     base.highlightTitles = highlights.map((h) => h.title).filter(Boolean);
+
+    // Before the qualifying names, not after. "Aqui" is the strongest funnel
+    // word in the data — and it is Portuguese, so the funnel it marks runs to a
+    // Brazilian audience this search is not for. An account whose highlight
+    // reads "Link Aqui 🔥" must be dropped for the aqui, not admitted for the
+    // link. Nothing is opened either way.
+    if (hasForeignLangHighlight(base.highlightTitles)) {
+      return {
+        ...base,
+        bucket: "wronglang",
+        note: `highlight in Spanish/Portuguese — skipped`,
+      };
+    }
+
     let namedHits = base.highlightTitles.filter(isFunnelHighlightTitle);
 
     // Stop here when a name already answered the question.
@@ -473,6 +490,9 @@ async function inspect(
         base.highlightTitles = [
           ...new Set([...base.highlightTitles, ...fresh.map((h) => h.title).filter(Boolean)]),
         ];
+        if (hasForeignLangHighlight(base.highlightTitles)) {
+          return { ...base, bucket: "wronglang", note: `highlight in Spanish/Portuguese — skipped` };
+        }
         namedHits = base.highlightTitles.filter(isFunnelHighlightTitle);
         // A telling name that only the second list revealed: same rule, and the
         // reason the second look is paid for at all.

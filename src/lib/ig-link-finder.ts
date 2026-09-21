@@ -13,6 +13,7 @@ import {
   isFunnelHighlightTitle,
   hasForeignScript,
   hasForeignLangHighlight,
+  hasForeignLangBio,
 } from "./link-signals";
 
 import {
@@ -344,6 +345,19 @@ async function inspect(
         ...base,
         bucket: "wrongscript",
         note: "bio is not in Latin script — skipped",
+      };
+    }
+
+    // Latin letters, but not this search's language. Placed above the bio-link
+    // check on purpose: "mira mis destacadas" beside a linktr.ee is a funnel,
+    // and a funnel aimed somewhere else — so the account is dropped for the
+    // Spanish rather than admitted for the link, exactly as "Link Aqui 🔥" is
+    // dropped in the highlights.
+    if (hasForeignLangBio(base.biography)) {
+      return {
+        ...base,
+        bucket: "wronglang",
+        note: "bio in Spanish/Portuguese/Italian/French — skipped",
       };
     }
 

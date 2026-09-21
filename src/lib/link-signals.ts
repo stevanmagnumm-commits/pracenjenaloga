@@ -28,9 +28,43 @@ export const BIO_SIGNALS: Signal[] = [
   // one: @jokesonella's bio ends "shh… don't tell anyone 👇🏼", which an
   // arrow-only pattern missed entirely.
   { label: "⬇️", re: /[⬇↓]|👇/u },
-  { label: "for more of me", re: /for\s*more\s*of\s*me/i },
+  // "for" is not required — the bare phrase is 37:7 on its own.
+  { label: "more of me", re: /more\s*of\s*me/i },
   { label: "my other page", re: /(my\s*)?other\s*(page|acc(ount)?|profile)/i },
+  // ---------------------------------------------------------------------
+  // Measured on the 49,902-account run, against accounts that qualified only
+  // later through their highlights — so every one of these was a bio we read
+  // and walked past. Hits : misses.
+  // ---------------------------------------------------------------------
+  // 700:52. By far the largest, and every one of them was missed, because the
+  // pattern above it demands "check MY highlights" and almost nobody writes it
+  // that way: "It's in my highlights" · "see highlights" · "Go to the
+  // highlights" · "Look at my Highlight" · "Tap the highlights" · "Did you
+  // notice my highlight?" — 684 distinct phrasings across 700 accounts. The
+  // word itself is the signal; the sentence around it never repeats.
+  { label: "highlight", re: /highlight/i },
+  { label: "link in", re: /link\s*(is\s*)?in\b/i }, // 30:0
+  { label: "below", re: /\b(below|scroll|down\s*(here|below))\b/i }, // 62:13
+  { label: "🔗", re: /🔗/u }, // 199:46
+  // An arrow drawn with letters: "all my links below! v v v v v v". Three or
+  // more, so a pair of initials cannot trip it.
+  { label: "v v v", re: /\bv(\s+v){2,}\b/i },
 ];
+
+/**
+ * Bio text that marks the account as writing for a Spanish, Portuguese,
+ * Italian or French audience.
+ *
+ * Deliberately narrower than the highlight list: a bio is a paragraph, not a
+ * label, so short bounded words like "mes" or "amor" fire far too easily in
+ * it. Only phrases that cannot be anything else.
+ */
+export const FOREIGN_LANG_BIO =
+  /destacad|destaque|mira\s+mis?\b|lo\s+que\s+buscas|in\s+evidenza|\b[àa]?\s*la\s+une\b|historias?\s+destacad/i;
+
+export function hasForeignLangBio(text: string): boolean {
+  return !!text && FOREIGN_LANG_BIO.test(text);
+}
 
 /**
  * Highlight names that carry the funnel.

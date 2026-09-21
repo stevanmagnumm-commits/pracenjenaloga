@@ -56,6 +56,10 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   // Padlocks read as "gated content" in this context: 💙🔓, LINKS 🔐💋, 🔒Here!🔥
   { label: "🔒", re: /[🔒🔓🔐]/u },
   { label: "link", re: /link/i },
+  // The same word with a letter missing, which is what folding leaves of
+  // "llnk": repeated letters collapse to one, so link survives but llnk
+  // becomes lnk. Bounded, since lnk is not a fragment of anything else.
+  { label: "lnk", re: /(^|[^a-z])li?nks?([^a-z]|$)/i },
   { label: "spicy", re: /spicy|🌶/iu },
   // Bounded so "here" does not fire on "where", "there", "adhere".
   { label: "here", re: /(^|[^a-z])here([^a-z]|$)/i },
@@ -92,6 +96,39 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   { label: "👀", re: /👀/u },
   { label: "🎁", re: /🎁/u },
   { label: "🤫", re: /🤫/u },
+  // ---------------------------------------------------------------------
+  // Second pass over the same clean sample: every name at 80% or better with
+  // at least two hits. Counts in brackets are hits : misses.
+  // ---------------------------------------------------------------------
+  { label: "chat with me", re: /chat\s*w(ith)?\/?\s*me/i }, // 4:0
+  { label: "about me", re: /about\s*me/i }, // 5:0
+  { label: "all me", re: /(^|[^a-z])all\s*me([^a-z]|$)/i }, // 2:0
+  { label: "what u want", re: /what\s*(u|you)\s*want/i }, // 2:0
+  { label: "my content", re: /my\s*content/i }, // 2:0
+  { label: "the goods", re: /the\s*good/i }, // 4:0 — the goods, the good stuff
+  { label: "free", re: /(^|[^a-z])free([^a-z]|$)/i }, // 2:0
+  { label: "klick", re: /klick/i }, // 2:0 — click, spelled the German way
+  { label: "youtube", re: /youtube/i }, // 2:0
+  // Telegram with the paper plane swapped for a television: 📺gram.
+  { label: "gram", re: /[📺✈🛩]\s*gram/iu }, // 2:0
+  // "me" on its own is a coin flip (21:21), but "me" wearing a heart or a
+  // smiley is not: me 💕 · me <3 · me :) all hit without a miss.
+  { label: "me +", re: /(^|[^a-z])me\s*([💕💖💗💘💞❤🥰😈]|<3|[:;]-?[)3d])/iu }, // 7:0
+  // Emoji, exact, no near relatives.
+  { label: "⛓️‍💥", re: /⛓/u }, // 6:0
+  { label: "🖇️", re: /🖇/u }, // 5:0
+  { label: "🔥🔥", re: /🔥\s*🔥/u }, // 4:0 — the pair only; a single 🔥 is 4:3
+  { label: "💜", re: /💜/u }, // 4:1
+  { label: "😈", re: /😈/u }, // 5:0
+  { label: "🥰", re: /🥰/u }, // 3:0
+  { label: "🤭", re: /🤭/u }, // 2:0
+  { label: "💬", re: /💬/u }, // 2:0
+  { label: "💓💓", re: /💓\s*💓/u }, // 2:0
+  { label: "👋", re: /👋/u }, // 2:0
+  { label: ";)", re: /[:;]-?\)/ }, // 6:0
+  // Whole title only — "of" inside a word is everywhere, "OF" as the entire
+  // name of a highlight is OnlyFans. Same for a highlight called just "L".
+  { label: "of", re: /^\s*(of|l)\s*$/i }, // 4:0
   // The OnlyFans blue, on its own rather than only beside a white heart.
   //
   // It was the pair 💙🤍 for fear that a lone blue heart would drag in every
@@ -141,7 +178,9 @@ export function hasForeignScript(text: string): boolean {
  * Checked BEFORE the qualifying names, so an account whose highlight reads
  * "Link Aqui 🔥" is dropped rather than admitted on the word "link".
  */
-export const FOREIGN_LANG_HIGHLIGHT = /aqu[ií]/i;
+export const FOREIGN_LANG_HIGHLIGHT =
+  // "aqui" however it is spaced or hyphenated: aqui · aquí · A-Q-U-I · a q u i
+  /a\W*q\W*u\W*[ií]|clique|euzinha|vem\s*me\s*ver|receitas|conte[uú]do/i;
 
 export function hasForeignLangHighlight(titles: string[]): boolean {
   return titles.some((t) => FOREIGN_LANG_HIGHLIGHT.test(t || ""));
@@ -152,7 +191,37 @@ export function matchSignals(text: string, signals: Signal[]): string[] {
   return signals.filter((s) => s.re.test(text)).map((s) => s.label);
 }
 
+
+/**
+ * The same name, written to be read by a human and not by a filter.
+ *
+ * Seen in the data: 𝓵𝓲𝓷𝓴 · l i n k · l!nk · llnk · l1nks · moreee · moree :)
+ * Every one of them is a word already in the list above, and every one of them
+ * slipped past it. They are not new signals; they are the old ones in costume.
+ *
+ * Two folds, because one cannot do both jobs. `fold` keeps word spacing, so
+ * phrases still read as phrases. `tight` removes it, which is what turns
+ * "l i n k" back into "link" — and only ever makes a pattern match less of the
+ * string, never more, so it cannot invent a hit.
+ */
+function fold(title: string): string {
+  return title
+    .normalize("NFKD") // 𝓵𝓲𝓷𝓴 -> link
+    .toLowerCase()
+    .replace(/[1!|]/g, "i") // l1nk, l!nk -> link
+    .replace(/0/g, "o")
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ") // punctuation and emoji out of the way
+    .replace(/(\p{L})\1{1,}/gu, "$1") // moreee -> more, llnk -> lnk
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** True when a highlight's name alone marks the account as worth keeping. */
 export function isFunnelHighlightTitle(title: string): boolean {
-  return HIGHLIGHT_SIGNALS.some((s) => s.re.test(title));
+  if (!title) return false;
+  const folded = fold(title);
+  const tight = folded.replace(/\s+/g, "");
+  return HIGHLIGHT_SIGNALS.some(
+    (s) => s.re.test(title) || s.re.test(folded) || s.re.test(tight),
+  );
 }

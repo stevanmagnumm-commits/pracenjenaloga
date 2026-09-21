@@ -178,9 +178,31 @@ export function hasForeignScript(text: string): boolean {
  * Checked BEFORE the qualifying names, so an account whose highlight reads
  * "Link Aqui 🔥" is dropped rather than admitted on the word "link".
  */
-export const FOREIGN_LANG_HIGHLIGHT =
-  // "aqui" however it is spaced or hyphenated: aqui · aquí · A-Q-U-I · a q u i
-  /a\W*q\W*u\W*[ií]|clique|euzinha|vem\s*me\s*ver|receitas|conte[uú]do/i;
+export const FOREIGN_LANG_HIGHLIGHT = new RegExp(
+  [
+    // "aqui" however it is spaced or hyphenated: aqui · aquí · A-Q-U-I · a q u i
+    String.raw`a\W*q\W*u\W*[ií]`,
+    // The funnel words themselves, in Portuguese.
+    String.raw`clique|euzinha|vem\s*me\s*ver|receitas|conte[uú]do`,
+    // "Destaques" / "Destacadas" is what Instagram itself calls highlights in
+    // Portuguese and Spanish, so it appears on accounts that never chose a name
+    // at all — 561 of them here, the single commonest marker in the data.
+    String.raw`destac|destaq`,
+    // Ordinary album names, but only in those languages. Bounded, so "family"
+    // is not taken for "família" nor "Nola" for "hola".
+    String.raw`(^|\W)(praia|playa)(\W|$)`,
+    String.raw`(^|\W)fam[ií]lia(\W|$)`,
+    String.raw`(^|\W)amig[ao]s?(\W|$)`,
+    String.raw`(^|\W)traba(lho|jo)(\W|$)`,
+    String.raw`(^|\W)via(jes|gem|jem)(\W|$)`,
+    String.raw`(^|\W)comidas?(\W|$)`,
+    String.raw`(^|\W)(meus?|minhas?|mis)(\W|$)`,
+    String.raw`(^|\W)amor(\W|$)`,
+    // The -o/-a ending only: English "exclusive" stays a qualifying signal.
+    String.raw`exclusiv[ao](\W|$)`,
+  ].join("|"),
+  "i",
+);
 
 export function hasForeignLangHighlight(titles: string[]): boolean {
   return titles.some((t) => FOREIGN_LANG_HIGHLIGHT.test(t || ""));

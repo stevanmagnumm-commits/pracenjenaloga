@@ -97,7 +97,12 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   { label: "snap", re: /(^|[^a-z])snap(chat)?([^a-z]|$)/i },
   // Emoji matched exactly as given — no near relatives. 🤭 is deliberately not
   // here beside 🤫, and no eye but 👀.
-  { label: "👀", re: /👀/u },
+  // The eyes qualify only as the WHOLE name. Measured both ways, the precision
+  // where 👀 is the only signal on the account is the same 67% either way —
+  // 91:44 anywhere, 37:18 alone — so narrowing it does not clean it up, it
+  // halves the volume. Narrow by choice rather than by evidence. Names like
+  // "Here 👀" and "🔗👀" are unaffected: they qualify on the other half.
+  { label: "👀", re: /^(\s*👀)+\s*$/u },
   { label: "🎁", re: /🎁/u },
   { label: "🤫", re: /🤫/u },
   // ---------------------------------------------------------------------

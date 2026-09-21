@@ -364,22 +364,18 @@ async function inspect(
     let unreadable = 0;
     let openedCount = 0;
 
-    /** Open up to MAX_HIGHLIGHTS of these, named ones first, stopping at the
-     *  first link. Returns true the moment something is found. */
+    /**
+     * Open up to MAX_HIGHLIGHTS of these, stopping at the first link.
+     *
+     * Every highlight reaching here is plainly named: an account with a telling
+     * title has already been qualified and returned, so there is nothing to
+     * sort and no name worth spending an extra call on. This is the blind
+     * search, and MAX_HIGHLIGHTS is a hard cap on it.
+     */
     const tryHighlights = async (list: HighlightRef[]): Promise<boolean> => {
-      const ordered = [...list].sort(
-        (a, b) =>
-          Number(isFunnelHighlightTitle(b.title)) - Number(isFunnelHighlightTitle(a.title)),
-      );
-      for (const h of ordered) {
+      for (const h of list) {
         if (!isActive()) break;
-        // The budget is two highlights — but a highlight whose NAME announces
-        // the funnel is always opened, even past it. Otherwise the cap could be
-        // spent on two holiday albums in the first (truncated) list, leaving a
-        // "da link ;)" that only appeared in the second list unopened. That is
-        // the exact shape of the @natalieexking case, and the one call it costs
-        // is the most valuable one on the account.
-        if (openedCount >= MAX_HIGHLIGHTS && !isFunnelHighlightTitle(h.title)) break;
+        if (openedCount >= MAX_HIGHLIGHTS) break;
         if (seenIds.has(h.id)) continue;
         seenIds.add(h.id);
         openedCount++;
@@ -409,24 +405,37 @@ async function inspect(
     // Before this, highlights were opened first and the names consulted
     // afterwards, so an account with a highlight called "my page" spent two
     // calls proving something its own title had already said.
-    const openNamedOnly = async (list: HighlightRef[]): Promise<boolean> =>
-      tryHighlights(list.filter((h) => isFunnelHighlightTitle(h.title)));
+    /** A name that announces the funnel IS the verdict — see below. */
+    const qualifiedByName = (hits: string[]): LinkFinderResult => ({
+      ...base,
+      bucket: "hlname",
+      note: `highlight named: ${hits.slice(0, 4).join(", ")}`,
+    });
 
     let highlights = await fetchHighlights(cand.username);
     base.highlightTitles = highlights.map((h) => h.title).filter(Boolean);
     let namedHits = base.highlightTitles.filter(isFunnelHighlightTitle);
 
-    let found = false;
-    if (namedHits.length) {
-      found = await openNamedOnly(highlights);
-    } else if (highlights.length) {
-      found = await tryHighlights(highlights);
-    }
+    // Stop here when a name already answered the question.
+    //
+    // Opening that highlight could only move the account from "highlight says
+    // so" to "link in highlight", and both are kept — so the call buys a URL
+    // and never a verdict. Measured across 49,902 accounts: 3,320 qualified on
+    // a name and cost 3,508 opens between them, not one of which changed
+    // whether the account was good.
+    //
+    // The price is that those accounts carry no link, only the name that earned
+    // them. That is a deliberate trade: the URL is worth less here than the
+    // calls it costs.
+    if (namedHits.length) return qualifiedByName(namedHits);
+
+    let found = highlights.length ? await tryHighlights(highlights) : false;
 
     // The list arrives truncated about four times in ten, and the entry it drops
     // is the one that matters — so a second look is worth it, but only when the
-    // first found neither a link nor a telling name.
-    if (!found && !namedHits.length && isActive()) {
+    // first found nothing. (No need to test the names again: a telling one
+    // would have returned above.)
+    if (!found && isActive()) {
       const second = await fetchHighlights(cand.username);
       const fresh = second.filter((h) => !seenIds.has(h.id));
       if (fresh.length) {
@@ -434,7 +443,10 @@ async function inspect(
           ...new Set([...base.highlightTitles, ...fresh.map((h) => h.title).filter(Boolean)]),
         ];
         namedHits = base.highlightTitles.filter(isFunnelHighlightTitle);
-        found = namedHits.length ? await openNamedOnly(fresh) : await tryHighlights(fresh);
+        // A telling name that only the second list revealed: same rule, and the
+        // reason the second look is paid for at all.
+        if (namedHits.length) return qualifiedByName(namedHits);
+        found = await tryHighlights(fresh);
       }
       highlights = [...highlights, ...fresh];
     }
@@ -446,19 +458,6 @@ async function inspect(
     if (found) {
       const uniq = [...new Set(storyLinks)];
       return { ...base, storyLinks: uniq, linkHosts: hostsOf(uniq), bucket: "story" };
-    }
-
-    // The name alone qualifies the account even when no sticker could be read —
-    // a highlight called "MY LINKS" is not named that by accident. Kept apart
-    // from the bio phrases: both mean "good", but one was proven by what the
-    // account wrote about itself and the other by what it called a highlight,
-    // and collapsing them hides which check is actually earning its keep.
-    if (namedHits.length) {
-      return {
-        ...base,
-        bucket: "hlname",
-        note: `highlight named: ${namedHits.join(", ")}`,
-      };
     }
 
     // Nothing found — but "found nothing" and "could not look" are different

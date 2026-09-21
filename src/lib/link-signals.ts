@@ -40,10 +40,15 @@ export const BIO_SIGNALS: Signal[] = [
  * Links · My link 💙 · More 😏 · my links 🔗 · More of me😝 · Check it · 🔗🔗🔗 ·
  * Find me🥰 · Find me here
  *
- * "💙🤍" is in the list for a reason that is not obvious from the outside: blue
- * and white are the OnlyFans colours, and the pair is used as a wink toward it.
- * Matched only as an adjacent pair, in either order, so a lone blue heart in
- * "Brasil 💙" does not drag a holiday album in with it.
+ * "💙" is in the list for a reason that is not obvious from the outside: blue
+ * and white are the OnlyFans colours, and the blue heart is used as a wink
+ * toward it.
+ *
+ * The later entries were not guessed. They come from the 49,902-account run,
+ * read off the one sample where the evidence is unambiguous: accounts with
+ * exactly ONE highlight, so the name can only be the one that held the link.
+ * Names that looked strong on the whole set but weak there were left out —
+ * "highlights" (15%), "destacada" (12%), "me" (50%) are coin flips.
  */
 export const HIGHLIGHT_SIGNALS: Signal[] = [
   // The link emoji is unambiguous wherever it appears.
@@ -70,8 +75,32 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   { label: "click", re: /click/i },
   { label: "all of me", re: /all\s*of\s*me/i },
   { label: "socials", re: /socials?/i },
-  // Blue + white, the OnlyFans palette, used as a nod to it. Adjacent pair only.
-  { label: "💙🤍", re: /💙\s*🤍|🤍\s*💙/u },
+  // ---------------------------------------------------------------------
+  // Names measured on the 49,902-account run, on the clean sample: accounts
+  // with exactly one highlight, where the name can only be the one that held
+  // the link. Share of that sample in brackets.
+  // ---------------------------------------------------------------------
+  { label: "vip", re: /(^|[^a-z])vip([^a-z]|$)/i }, // 81%
+  { label: "text me", re: /(text|message|msg)\s*me/i }, // 89%
+  { label: "exclusive", re: /exclusiv/i }, // 75%, also exclusiva/exclusivo
+  { label: "telegram", re: /telegram/i }, // 91% on the clean sample
+  // "snap" is Snapchat here. Bounded so it cannot take "snapshot" or
+  // "snapback", which are ordinary album names.
+  { label: "snap", re: /(^|[^a-z])snap(chat)?([^a-z]|$)/i },
+  // Emoji matched exactly as given — no near relatives. 🤭 is deliberately not
+  // here beside 🤫, and no eye but 👀.
+  { label: "👀", re: /👀/u },
+  { label: "🎁", re: /🎁/u },
+  { label: "🤫", re: /🤫/u },
+  // The OnlyFans blue, on its own rather than only beside a white heart.
+  //
+  // It was the pair 💙🤍 for fear that a lone blue heart would drag in every
+  // "Brasil 💙". Measured instead: among accounts with a single highlight —
+  // where the name is unambiguously the one holding the link — 💙 alone was 23
+  // hits and 0 misses. Across all accounts it is weaker, 331 to 460, but the
+  // "misses" there include accounts whose link sits in a highlight the blind
+  // search never opened, so that figure is a floor rather than a rate.
+  { label: "💙", re: /[💙🩵]/u },
 ];
 
 /**

@@ -684,9 +684,13 @@ function finishRun(myToken: number): boolean {
   progress.finishedAt = Date.now();
   progress.abortedReason = quotaAbort;
   const c = progress.counts;
+  // Every bucket, in the order the UI shows them. The old line listed seven of
+  // eleven, so the two that skip work entirely and the two that reject an
+  // account outright were invisible in the logs — which is where you look when
+  // a run's numbers do not add up.
   console.log(
-    `[ig-link-finder] Done. bio: ${c.bio}, signal: ${c.signal}, hlname: ${c.hlname}, ` +
-      `story: ${c.story}, none: ${c.none}, private: ${c.private}, failed: ${c.failed}`,
+    `[ig-link-finder] Done. ` +
+      (Object.keys(c) as LinkBucket[]).map((b) => `${b}: ${c[b]}`).join(", "),
   );
   return true;
 }

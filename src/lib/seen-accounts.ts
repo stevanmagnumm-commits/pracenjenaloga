@@ -32,16 +32,34 @@ const TTL_MS = Math.max(1, Number(process.env.IG_SEEN_TTL_DAYS) || 7) * DAY;
  * "failed" is deliberately absent: it is the absence of an answer, not an
  * answer, so it is never recorded and never suppresses a later attempt.
  */
+/**
+ * Verdicts that mean "this account is running a funnel".
+ *
+ * These never expire. The question the whole tool exists to answer has been
+ * answered for them, and asking again a week later costs calls to learn
+ * something already known — the account does not stop having a funnel. On a
+ * repeat they go straight into the good pile, marked as carried over rather
+ * than freshly checked.
+ */
+const GOOD_BUCKETS = new Set(["bio", "signal", "hlname", "story"]);
+
+/**
+ * The rest do expire, and that is the point of the week: an empty bio may gain
+ * a link, an account under the follower floor may grow past it. Only a verdict
+ * that can still change is worth re-checking.
+ */
 const CACHED_BUCKETS = new Set([
-  "bio",
-  "signal",
-  "hlname",
-  "story",
+  ...GOOD_BUCKETS,
   "wrongscript",
   "outofrange",
   "none",
   "private",
 ]);
+
+/** True when this verdict already qualified the account. */
+export function wasGood(bucket: string): boolean {
+  return GOOD_BUCKETS.has(bucket);
+}
 
 const FILE = "seen-accounts.jsonl";
 
@@ -73,7 +91,7 @@ async function load(): Promise<void> {
       // Dropped on the way in, not merely ignored on lookup. With a fixed
       // expiry the log would otherwise grow without bound, and every restart
       // would pay to read a year of answers nobody is allowed to use.
-      if (!(r.t > cutoff)) {
+      if (!GOOD_BUCKETS.has(r.b) && !(r.t > cutoff)) {
         expired++;
         map.delete(r.u);
         continue;
@@ -112,6 +130,7 @@ export function seenBefore(username: string): SeenRow | null {
   const row = store?.get(username.toLowerCase());
   if (!row) return null;
   if (!CACHED_BUCKETS.has(row.b)) return null;
+  if (GOOD_BUCKETS.has(row.b)) return row; // good does not go stale
   if (Date.now() - row.t > TTL_MS) return null;
   return row;
 }

@@ -27,6 +27,7 @@ import {
   recordSeen,
   flushSeen,
   seenCount,
+  wasGood,
 } from "./seen-accounts";
 
 /** Names of the two files a run leaves behind so a restart can pick it up. */
@@ -87,6 +88,7 @@ export type LinkBucket =
   | "outofrange"
   | "wrongscript"
   | "seen"
+  | "known"
   | "none"
   | "private"
   | "failed";
@@ -189,6 +191,7 @@ function emptyCounts(): Record<LinkBucket, number> {
     outofrange: 0,
     wrongscript: 0,
     seen: 0,
+    known: 0,
     none: 0,
     private: 0,
     failed: 0,
@@ -305,11 +308,17 @@ async function inspect(
   const before = seenBefore(cand.username);
   if (before) {
     const days = Math.floor((Date.now() - before.t) / 86_400_000);
-    return {
-      ...base,
-      bucket: "seen",
-      note: `already checked ${days === 0 ? "today" : `${days}d ago`} — was: ${before.b}`,
-    };
+    const when = days === 0 ? "today" : `${days}d ago`;
+    // Two different reasons to skip, and they must not share a bucket.
+    //
+    // An account that already qualified stays qualified — it does not stop
+    // running a funnel — so it is carried into the good pile without a single
+    // call, marked as carried rather than freshly checked. Anything else is
+    // only skipped while its verdict is still fresh; once that lapses the
+    // account comes back as new, because an empty bio can gain a link.
+    return wasGood(before.b)
+      ? { ...base, bucket: "known", note: `checked before (${when}) — was: ${before.b}` }
+      : { ...base, bucket: "seen", note: `already checked ${when} — was: ${before.b}` };
   }
 
   try {

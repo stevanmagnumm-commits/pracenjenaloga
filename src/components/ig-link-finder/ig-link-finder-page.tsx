@@ -21,6 +21,7 @@ import {
   UserMinus,
   Languages,
   History,
+  BookmarkCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useRowSelection, openInstagramTabs } from "@/lib/use-row-selection";
@@ -38,6 +39,7 @@ type LinkBucket =
   | "signal"
   | "hlname"
   | "story"
+  | "known"
   | "outofrange"
   | "wrongscript"
   | "seen"
@@ -93,6 +95,7 @@ const BUCKET_ORDER: LinkBucket[] = [
   "signal",
   "hlname",
   "story",
+  "known",
   "outofrange",
   "wrongscript",
   "seen",
@@ -128,6 +131,12 @@ const BUCKET_META: Record<
     icon: Sparkles,
     badgeCls: "bg-violet-500/10 text-violet-400",
     textCls: "text-violet-400",
+  },
+  known: {
+    label: "Checked before",
+    icon: BookmarkCheck,
+    badgeCls: "bg-emerald-500/10 text-emerald-400",
+    textCls: "text-emerald-400",
   },
   outofrange: {
     label: "Out of range",
@@ -338,7 +347,9 @@ export function IgLinkFinderPage() {
 
   // Every bucket that means "this account is running a funnel", regardless of
   // which check proved it.
-  const GOOD: LinkBucket[] = ["bio", "signal", "hlname", "story"];
+  // "known" belongs here: the account qualified on an earlier run and was
+  // carried over rather than re-checked, so it is good — just not good today.
+  const GOOD: LinkBucket[] = ["bio", "signal", "hlname", "story", "known"];
   const goodResults = sorted.filter((r) => GOOD.includes(r.bucket));
 
   function handleDownloadGood() {

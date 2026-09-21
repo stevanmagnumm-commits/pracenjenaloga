@@ -65,7 +65,11 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   { label: "here", re: /(^|[^a-z])here([^a-z]|$)/i },
   // "more" is the same shape: More ;) · More 😏 · More of me
   { label: "more", re: /(^|[^a-z])more([^a-z]|$)/i },
-  { label: "check it", re: /check\s*(it|me)?/i },
+  // "check" must be checking SOMETHING. With `(it|me)?` optional the whole
+  // pattern collapsed to /check/, and qualified "Fit checks", "mirror check",
+  // "closet check", "check ins" and "fake check" — 45 occurrences on one run,
+  // roughly a third of them nothing to do with a funnel.
+  { label: "check it", re: /check\s*(it|this|that|me|out|my|the|highlight)/i },
   { label: "find me", re: /find\s*me/i },
   { label: "website", re: /web\s*site/i },
   // The 18+ badge is used as the highlight's whole name on these accounts.

@@ -200,6 +200,19 @@ export const FOREIGN_LANG_HIGHLIGHT = new RegExp(
     String.raw`(^|\W)amor(\W|$)`,
     // The -o/-a ending only: English "exclusive" stays a qualifying signal.
     String.raw`exclusiv[ao](\W|$)`,
+    // French. Small — 121 accounts — but the same case: "liens ici" is "links
+    // here", as strong a funnel word as anything on the qualifying list, and
+    // pointing at an audience this search is not for.
+    String.raw`(^|\W)liens?(\W|$)`,
+    String.raw`(^|\W)ici(\W|$)`,
+    String.raw`(^|\W)(mes|mon)(\W|$)`,
+    String.raw`(^|\W)moi(\W|$)`,
+    String.raw`(^|\W)amis(\W|$)`,
+    String.raw`(^|\W)plages?(\W|$)`,
+    String.raw`(^|\W)voyages?(\W|$)`,
+    String.raw`(^|\W)famille(\W|$)`,
+    String.raw`(^|\W)travail(\W|$)`,
+    String.raw`bisous|coucou|abonn[ée]|gratuit|cliquez`,
   ].join("|"),
   "i",
 );

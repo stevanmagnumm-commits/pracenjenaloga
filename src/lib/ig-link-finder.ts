@@ -21,6 +21,13 @@ import {
   removeFiles,
   ResultLog,
 } from "./run-state";
+import {
+  primeSeen,
+  seenBefore,
+  recordSeen,
+  flushSeen,
+  seenCount,
+} from "./seen-accounts";
 
 /** Names of the two files a run leaves behind so a restart can pick it up. */
 const WORK_FILE = "link-finder-work.json";
@@ -79,6 +86,7 @@ export type LinkBucket =
   | "story"
   | "outofrange"
   | "wrongscript"
+  | "seen"
   | "none"
   | "private"
   | "failed";
@@ -180,6 +188,7 @@ function emptyCounts(): Record<LinkBucket, number> {
     story: 0,
     outofrange: 0,
     wrongscript: 0,
+    seen: 0,
     none: 0,
     private: 0,
     failed: 0,
@@ -289,6 +298,19 @@ async function inspect(
     followers: 0,
     highlightTitles: [] as string[],
   };
+
+  // Already answered for, in this run or any run before it — so not asked
+  // again. This is checked before the profile call, which means a repeat costs
+  // nothing at all rather than the 2.4 calls it used to.
+  const before = seenBefore(cand.username);
+  if (before) {
+    const days = Math.floor((Date.now() - before.t) / 86_400_000);
+    return {
+      ...base,
+      bucket: "seen",
+      note: `already checked ${days === 0 ? "today" : `${days}d ago`} — was: ${before.b}`,
+    };
+  }
 
   try {
     // fetchProfileRaw, not fetchProfile. The narrowed profile carries `bio` and
@@ -586,6 +608,9 @@ async function checkPhase(
   const isActive = () => progress.running && runToken === myToken && !quotaAbort;
   const log = new ResultLog<LinkFinderResult>(RESULTS_FILE);
 
+  const known = await primeSeen();
+  console.log(`[ig-link-finder] ${known} accounts already known from earlier runs`);
+
   progress.phase = "checking";
   progress.checkStartedAt = Date.now();
 
@@ -595,6 +620,8 @@ async function checkPhase(
     if (r.bucket in progress.counts) progress.counts[r.bucket]++;
     progress.completed++;
     log.add(r);
+    // So no later run ever pays for this account again.
+    if (r.bucket !== "seen") recordSeen(r.username, r.bucket);
   };
 
   try {
@@ -629,6 +656,8 @@ async function checkPhase(
     console.error("[ig-link-finder] Check phase error:", err);
   } finally {
     await log.flush();
+    await flushSeen();
+    console.log(`[ig-link-finder] ${seenCount()} accounts now known`);
     const completed = finishRun(myToken);
     // Only a run that actually reached the end of its work list gives up its
     // state file. A stop, a crash or a quota abort keeps it, so it can resume.

@@ -20,6 +20,7 @@ import {
   BadgeCheck,
   UserMinus,
   Languages,
+  History,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useRowSelection, openInstagramTabs } from "@/lib/use-row-selection";
@@ -39,6 +40,7 @@ type LinkBucket =
   | "story"
   | "outofrange"
   | "wrongscript"
+  | "seen"
   | "none"
   | "private"
   | "failed";
@@ -93,6 +95,7 @@ const BUCKET_ORDER: LinkBucket[] = [
   "story",
   "outofrange",
   "wrongscript",
+  "seen",
   "none",
   "private",
   "failed",
@@ -137,6 +140,12 @@ const BUCKET_META: Record<
     icon: Languages,
     badgeCls: "bg-zinc-500/15 text-zinc-500",
     textCls: "text-zinc-500",
+  },
+  seen: {
+    label: "Already seen",
+    icon: History,
+    badgeCls: "bg-sky-500/10 text-sky-400",
+    textCls: "text-sky-400",
   },
   none: {
     label: "No link",

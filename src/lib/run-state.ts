@@ -31,6 +31,9 @@ async function ensureDir(): Promise<void> {
 
 const filePath = (name: string) => path.join(STATE_DIR, name);
 
+/** Line separator for the JSONL files below. */
+const NL = String.fromCharCode(10);
+
 /** Replace a file atomically, so a crash mid-write cannot leave a torn file. */
 export async function saveJson(name: string, data: unknown): Promise<void> {
   try {
@@ -81,6 +84,19 @@ export async function readLines<T>(name: string): Promise<T[]> {
     return out;
   } catch {
     return [];
+  }
+}
+
+/** Rewrite a JSONL file from scratch — used to compact an append log. */
+export async function saveJsonl(name: string, rows: unknown[]): Promise<void> {
+  try {
+    await ensureDir();
+    const tmp = filePath(`${name}.tmp`);
+    const body = rows.map((r) => JSON.stringify(r)).join(NL) + NL;
+    await fs.writeFile(tmp, body, "utf8");
+    await fs.rename(tmp, filePath(name));
+  } catch (err) {
+    console.error(`[run-state] could not rewrite ${name}:`, err);
   }
 }
 

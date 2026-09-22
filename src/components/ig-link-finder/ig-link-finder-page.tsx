@@ -90,6 +90,8 @@ interface FinderProgress {
     checkHighlights: boolean;
   } | null;
   rate: { used: number; limit: number };
+  /** How many results the server holds, even when it did not send them. */
+  resultCount: number;
 }
 
 const BUCKET_ORDER: LinkBucket[] = [
@@ -218,26 +220,56 @@ export function IgLinkFinderPage() {
   // Its own second-by-second tick rather than riding the 1.5s progress poll:
   // on the poll the displayed seconds would jump 1, 2, 1, 2 and read as broken.
   const [now, setNow] = useState(() => Date.now());
+  // Kept apart from `progress` so a light poll cannot wipe them.
+  const [rows, setRows] = useState<FinderResult[]>([]);
+  // How many of the matching rows are actually drawn. The table used to
+  // render every one of them: 73,605 rows in the DOM is minutes of layout
+  // before the page responds to anything. Filters, selection, the host
+  // chips and every download still work on the whole set.
+  const [shown, setShown] = useState(300);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  /**
+   * The rows, which are the expensive part, are kept out of the poll.
+   *
+   * A 73,605-account run makes the full response 29MB, of which 502 bytes is
+   * the progress. Polling that every 1.5 seconds was moving 29MB to learn that
+   * four more accounts had been checked, and opening the page meant waiting
+   * for all of it before anything appeared.
+   */
+  const fetchResults = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ig-link-finder?results=1", { cache: "no-store" });
+      const data: FinderProgress = await res.json();
+      setProgress(data);
+      setRows(data.results);
+    } catch {}
+  }, []);
 
   const pollProgress = useCallback(async () => {
     try {
       const res = await fetch("/api/ig-link-finder", { cache: "no-store" });
       const data: FinderProgress = await res.json();
       setProgress(data);
-      if (!data.running && pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
+      if (!data.running) {
+        if (pollRef.current) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+        // The run just ended — now the rows are worth fetching, once.
+        if (data.resultCount > 0) void fetchResults();
       }
     } catch {}
-  }, []);
+  }, [fetchResults]);
 
   useEffect(() => {
+    // One full fetch on open; after that the poll stays light.
+    void fetchResults();
     pollProgress().then(() => {});
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [pollProgress]);
+  }, [pollProgress, fetchResults]);
 
   useEffect(() => {
     if (progress?.running && !pollRef.current) {
@@ -298,7 +330,7 @@ export function IgLinkFinderPage() {
     clear();
   }
 
-  const results = progress?.results || [];
+  const results = rows;
   // Accounts that are actually running a link come first — that is the answer
   // the screen exists to give.
   const sorted = [...results].sort(
@@ -604,7 +636,7 @@ export function IgLinkFinderPage() {
         </p>
       )}
 
-      {progress && progress.results.length > 0 && (
+      {rows.length > 0 && (
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
             {BUCKET_ORDER.map((b) => {
@@ -721,6 +753,21 @@ export function IgLinkFinderPage() {
             )}
           </div>
 
+          {filtered.length > shown && (
+            <div className="flex items-center justify-center gap-3 py-3">
+              <span className="text-sm text-muted-foreground">
+                Showing {shown.toLocaleString("en-US")} of{" "}
+                {filtered.length.toLocaleString("en-US")} — filters and
+                downloads use all of them
+              </span>
+              <Button variant="outline" size="sm" onClick={() => setShown(shown + 500)}>
+                Show 500 more
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setShown(filtered.length)}>
+                Show all
+              </Button>
+            </div>
+          )}
           <div className="rounded-lg border border-border overflow-x-auto">
             <Table>
               <TableHeader>
@@ -741,7 +788,7 @@ export function IgLinkFinderPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((r, idx) => {
+                {filtered.slice(0, shown).map((r, idx) => {
                   const meta = BUCKET_META[r.bucket];
                   const Icon = meta.icon;
                   const links = [...r.bioLinks, ...r.storyLinks];

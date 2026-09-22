@@ -50,11 +50,28 @@ export async function POST(request: NextRequest) {
   });
 }
 
-export async function GET() {
+/**
+ * Progress without the results unless they are asked for.
+ *
+ * The results are the whole payload: on a 73,605-account run this response was
+ * 29,135,671 bytes, of which 502 were the progress. The screen polls every 1.5
+ * seconds, so a running job was shipping 29MB a second and a half to say that
+ * four more accounts had been checked — and the page took minutes to open
+ * because it had to download, parse and render all of it before showing
+ * anything.
+ *
+ * So the poll is now 502 bytes, and the results come once: on load, and again
+ * when a run finishes.
+ */
+export async function GET(request: NextRequest) {
   const progress = getLinkFinderProgress();
+  const wantResults = request.nextUrl.searchParams.get("results") === "1";
+  const { results, ...rest } = progress;
   return NextResponse.json(
     {
-      ...progress,
+      ...rest,
+      results: wantResults ? results : [],
+      resultCount: results.length,
       // Only meaningful while idle; the UI uses it to offer a resume.
       resumable: await getResumableRun(),
       rate: getApiRateUsage(),

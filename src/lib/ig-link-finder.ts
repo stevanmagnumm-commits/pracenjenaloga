@@ -594,17 +594,32 @@ export async function runLinkFinder(
   const isActive = () => progress.running && runToken === myToken && !quotaAbort;
 
   try {
-    // Phase 1 — collect suggestions. One call per seed, ~80 accounts each.
+    // Phase 1 — collect suggestions. One call per seed, ~80 accounts each, and
+    // one call only: a seed that answers with nothing is taken at its word.
     //
-    // Seeds now run through the same pool as the checking phase. They used to
-    // go one at a time with a 400ms pause, which on a 1,444-seed run meant
-    // 2.4 hours of wall clock spent almost entirely waiting — 4 calls a minute
-    // against a budget of 280. The pause was there to stay under a cap that is
-    // now enforced properly in rate-limit.ts.
+    // Back to one at a time with a pause, by the owner's decision.
+    //
+    // Recorded because the measurement says otherwise and someone will read
+    // this later: 40 seeds were run three times, sequential then parallel then
+    // sequential again, and returned 1520, 1531 and 1461 suggestions with 18,
+    // 18 and 19 empty seeds. Parallel was the highest of the three, and the two
+    // sequential passes differed from each other by more than either differed
+    // from parallel. On volume there is nothing between them.
+    //
+    // That test measured how MANY accounts come back, not which ones, and the
+    // call here was made on the quality of them — which it does not answer.
+    //
+    // The cost is real and worth knowing before changing it back: at the
+    // provider's measured 5.7s a call plus the pause, 4,761 seeds take about
+    // eight hours to collect where the pool took five minutes. Both knobs are
+    // environment variables so this needs no deploy to revisit.
+    const SEED_CONCURRENCY = Math.max(1, Number(process.env.IG_SEED_CONCURRENCY) || 1);
+    const SEED_DELAY = Number(process.env.IG_SEED_DELAY ?? 400);
+
     const seen = new Set(cleanSeeds);
     const candidates: Candidate[] = [];
 
-    await pool(cleanSeeds, CONCURRENCY, isActive, async (seed) => {
+    await pool(cleanSeeds, SEED_CONCURRENCY, isActive, async (seed) => {
       progress.current = seed;
       try {
         const suggested = await fetchSimilarAccounts(seed);
@@ -628,6 +643,7 @@ export async function runLinkFinder(
       // Visible while collecting, so the screen shows the pile growing rather
       // than 0 until the whole phase ends.
       progress.total = candidates.length;
+      if (SEED_DELAY > 0 && isActive()) await sleep(SEED_DELAY);
     });
 
     const work = candidates.slice(0, maxCandidates);

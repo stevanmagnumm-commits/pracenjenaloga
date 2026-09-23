@@ -24,10 +24,14 @@ export const BIO_SIGNALS: Signal[] = [
   { label: "check my highlights", re: /check\s+(my|the|out my)\s+highlights?/i },
   { label: "only backup", re: /only\s+backup/i },
   { label: "main", re: /(^|[^a-z])main([^a-z]|$)/i },
-  // Down arrows come in several shapes, and the pointing hand is the common
-  // one: @jokesonella's bio ends "shh… don't tell anyone 👇🏼", which an
-  // arrow-only pattern missed entirely.
-  { label: "⬇️", re: /[⬇↓]|👇/u },
+  // The pointing hand 👇 used to be here beside the arrows and has been taken
+  // out. Measured on 2,152 accounts where it was the only signal: 1,329 of
+  // them already had a bio link, so the hand was pointing at something we
+  // check first and it added nothing; 538 were out of range; and the 223 it
+  // actually qualified on its own were fitness coaches, a video production
+  // company and a lifestyle account. An arrow in a bio points at the link
+  // field — when that field is empty it is pointing at nothing.
+  { label: "⬇️", re: /[⬇↓]/u },
   // "for" is not required — the bare phrase is 37:7 on its own.
   { label: "more of me", re: /more\s*of\s*me/i },
   { label: "my other page", re: /(my\s*)?other\s*(page|acc(ount)?|profile)/i },

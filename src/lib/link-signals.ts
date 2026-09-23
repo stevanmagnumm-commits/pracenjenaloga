@@ -88,6 +88,26 @@ export function hasForeignLangBio(text: string): boolean {
  * Names that looked strong on the whole set but weak there were left out —
  * "highlights" (15%), "destacada" (12%), "me" (50%) are coin flips.
  */
+
+/**
+ * A whole-title matcher for an emoji signal.
+ *
+ * An emoji standing alone is a label — the account chose it as the name of the
+ * highlight and nothing else. The same emoji inside a name is decoration, and
+ * decoration is everywhere: 🥰 appears alone 174 times in one run and beside
+ * other words 652 times, 💜 99 against 302, 😈 43 against 116. Reported from
+ * the panel as "Ламинирование 🥰" (a Russian lash-lamination album on a travel
+ * account) and "Hyunjin Dior💙✨" (K-pop), both admitted on the emoji alone.
+ *
+ * Repeats and the invisible decoration Instagram allows — variation selectors,
+ * zero-width joiners, skin tones — are still the same label, so they pass.
+ */
+function onlyEmoji(...forms: string[]): RegExp {
+  const one = `(?:${forms.join("|")})`;
+  const fluff = "[\s\uFE0F\u200D\u{1F3FB}-\u{1F3FF}]*";
+  return new RegExp(`^${fluff}(?:${one}${fluff})+$`, "u");
+}
+
 export const HIGHLIGHT_SIGNALS: Signal[] = [
   // The link emoji is unambiguous wherever it appears.
   { label: "🔗", re: /🔗/u },
@@ -162,16 +182,16 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   // smiley is not: me 💕 · me <3 · me :) all hit without a miss.
   { label: "me +", re: /(^|[^a-z])me\s*([💕💖💗💘💞❤🥰😈]|<3|[:;]-?[)3d])/iu }, // 7:0
   // Emoji, exact, no near relatives.
-  { label: "⛓️‍💥", re: /⛓/u }, // 6:0
-  { label: "🖇️", re: /🖇/u }, // 5:0
+  { label: "⛓", re: onlyEmoji("⛓", "💥") },
+  { label: "🖇", re: onlyEmoji("🖇") },
   { label: "🔥🔥", re: /🔥\s*🔥/u }, // 4:0 — the pair only; a single 🔥 is 4:3
-  { label: "💜", re: /💜/u }, // 4:1
-  { label: "😈", re: /😈/u }, // 5:0
-  { label: "🥰", re: /🥰/u }, // 3:0
-  { label: "🤭", re: /🤭/u }, // 2:0
-  { label: "💬", re: /💬/u }, // 2:0
+  { label: "💜", re: onlyEmoji("💜") },
+  { label: "😈", re: onlyEmoji("😈", "💦") },
+  { label: "🥰", re: onlyEmoji("🥰") },
+  { label: "🤭", re: onlyEmoji("🤭") },
+  { label: "💬", re: onlyEmoji("💬", "😉") },
   { label: "💓💓", re: /💓\s*💓/u }, // 2:0
-  { label: "👋", re: /👋/u }, // 2:0
+  { label: "👋", re: onlyEmoji("👋") },
   { label: ";)", re: /[:;]-?\)/ }, // 6:0
   // Whole title only — "of" inside a word is everywhere, "OF" as the entire
   // name of a highlight is OnlyFans. Same for a highlight called just "L".
@@ -184,7 +204,7 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   // hits and 0 misses. Across all accounts it is weaker, 331 to 460, but the
   // "misses" there include accounts whose link sits in a highlight the blind
   // search never opened, so that figure is a floor rather than a rate.
-  { label: "💙", re: /[💙🩵]/u },
+  { label: "💙", re: onlyEmoji("💙", "🩵", "🤍") },
 ];
 
 /**

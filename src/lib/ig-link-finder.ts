@@ -468,6 +468,21 @@ async function inspect(
     // Brazilian audience this search is not for. An account whose highlight
     // reads "Link Aqui 🔥" must be dropped for the aqui, not admitted for the
     // link. Nothing is opened either way.
+    // The bio said nothing about the alphabet because there was no bio. A
+    // travel account with 421,669 followers and highlights reading "China 5.0",
+    // "Bali✈️", "Belarus 🇧🇾" and "Ламинирование 🥰" reached the qualifying
+    // names and passed on the emoji — the script filter had only ever looked at
+    // the bio, and an empty bio told it nothing. The names are the other place
+    // an account writes in its own alphabet.
+    const foreignTitle = base.highlightTitles.find(hasForeignScript);
+    if (foreignTitle) {
+      return {
+        ...base,
+        bucket: "wrongscript",
+        note: `highlight not in Latin script: ${foreignTitle.slice(0, 40)}`,
+      };
+    }
+
     if (hasForeignLangHighlight(base.highlightTitles)) {
       return {
         ...base,

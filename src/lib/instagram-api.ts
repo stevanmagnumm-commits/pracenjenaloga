@@ -787,10 +787,38 @@ export interface SuggestedAccount {
 }
 
 /** Up to ~80 accounts Instagram considers similar to the seed. One call. */
+/**
+ * Ask twice before believing an account has no similar accounts.
+ *
+ * This endpoint answers "nothing here" as an OBJECT, not an empty array:
+ *
+ *   {"error":"User similar accounts data not found or user profile is private
+ *             or does not exist on Instagram"}
+ *
+ * which `Array.isArray` turned into an empty list — silently, with no error and
+ * no retry, the only endpoint in this file that did not ask again. And the
+ * answer is not stable: probed six seconds apart, @chxrli_love returned 0, then
+ * the error object, then 78; @lydiafayejones returned nothing twice and then
+ * 36. On a controlled run of 40 seeds, 18 came back empty on the first ask.
+ *
+ * So a first empty answer is treated as the hiccup it usually is. Two attempts
+ * by default, because the second is where most of the recovery was measured and
+ * every attempt is a call — IG_SIMILAR_ATTEMPTS moves it without a deploy.
+ */
+const SIMILAR_ATTEMPTS = Math.max(
+  1,
+  Number(process.env.IG_SIMILAR_ATTEMPTS) || 2,
+);
+
 export async function fetchSimilarAccounts(username: string): Promise<SuggestedAccount[]> {
-  const data = await apiGet(
-    `/get_ig_similar_accounts.php?username_or_url=${encodeURIComponent(username)}`,
-  );
+  let data: unknown = null;
+  for (let attempt = 0; attempt < SIMILAR_ATTEMPTS; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 1_500));
+    data = await apiGet(
+      `/get_ig_similar_accounts.php?username_or_url=${encodeURIComponent(username)}`,
+    );
+    if (Array.isArray(data) && data.length) break;
+  }
   if (!Array.isArray(data)) return [];
   const out: SuggestedAccount[] = [];
   for (const raw of data) {

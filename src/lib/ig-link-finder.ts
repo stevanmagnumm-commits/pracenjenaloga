@@ -597,24 +597,21 @@ export async function runLinkFinder(
     // Phase 1 — collect suggestions. One call per seed, ~80 accounts each, and
     // one call only: a seed that answers with nothing is taken at its word.
     //
-    // Back to one at a time with a pause, by the owner's decision.
+    // Seeds run through the same pool as the checking phase. Measured on the
+    // same 40 seeds three times — sequential, parallel, sequential — the
+    // returns were 1520, 1531 and 1461 suggestions with 18, 18 and 19 empty
+    // seeds: the two sequential passes differ from each other by more than
+    // either differs from parallel, so pacing buys nothing here. What it costs
+    // is hours — 4,761 seeds take about eight sequentially against five minutes
+    // in the pool.
     //
-    // Recorded because the measurement says otherwise and someone will read
-    // this later: 40 seeds were run three times, sequential then parallel then
-    // sequential again, and returned 1520, 1531 and 1461 suggestions with 18,
-    // 18 and 19 empty seeds. Parallel was the highest of the three, and the two
-    // sequential passes differed from each other by more than either differed
-    // from parallel. On volume there is nothing between them.
-    //
-    // That test measured how MANY accounts come back, not which ones, and the
-    // call here was made on the quality of them — which it does not answer.
-    //
-    // The cost is real and worth knowing before changing it back: at the
-    // provider's measured 5.7s a call plus the pause, 4,761 seeds take about
-    // eight hours to collect where the pool took five minutes. Both knobs are
-    // environment variables so this needs no deploy to revisit.
-    const SEED_CONCURRENCY = Math.max(1, Number(process.env.IG_SEED_CONCURRENCY) || 1);
-    const SEED_DELAY = Number(process.env.IG_SEED_DELAY ?? 400);
+    // Both knobs stay as environment variables so this needs no deploy to
+    // revisit.
+    const SEED_CONCURRENCY = Math.max(
+      1,
+      Number(process.env.IG_SEED_CONCURRENCY) || CONCURRENCY,
+    );
+    const SEED_DELAY = Number(process.env.IG_SEED_DELAY ?? 0);
 
     const seen = new Set(cleanSeeds);
     const candidates: Candidate[] = [];

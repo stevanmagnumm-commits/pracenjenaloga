@@ -31,6 +31,13 @@ import {
   seenCount,
   wasGood,
 } from "./seen-accounts";
+import {
+  primeSeedHistory,
+  seedAskedRecently,
+  recordSeedUse,
+  flushSeedHistory,
+  SEED_TTL_DAYS,
+} from "./seed-history";
 
 /** Names of the two files a run leaves behind so a restart can pick it up. */
 const WORK_FILE = "link-finder-work.json";
@@ -133,6 +140,8 @@ export interface LinkFinderProgress {
   /** Seeds asked for suggestions so far, out of how many were pasted. */
   seedsDone: number;
   seedsTotal: number;
+  /** Seeds passed over because they were asked within the last few days. */
+  seedsSkipped: number;
   /** Epoch ms, kept on the server so reopening the page does not restart the
    *  clock. checkStartedAt is separate on purpose: the checking rate must not
    *  be diluted by however long the seeding phase took before it. */
@@ -210,6 +219,7 @@ function freshProgress(running: boolean, seedsTotal = 0): LinkFinderProgress {
     phase: running ? "suggesting" : "idle",
     seedsDone: 0,
     seedsTotal,
+    seedsSkipped: 0,
     startedAt: running ? Date.now() : null,
     checkStartedAt: null,
     finishedAt: null,
@@ -616,10 +626,30 @@ export async function runLinkFinder(
     const seen = new Set(cleanSeeds);
     const candidates: Candidate[] = [];
 
+    const knownSeeds = await primeSeedHistory();
+    console.log(
+      `[ig-link-finder] ${knownSeeds} seeds asked within the last ${SEED_TTL_DAYS}d`,
+    );
+
     await pool(cleanSeeds, SEED_CONCURRENCY, isActive, async (seed) => {
       progress.current = seed;
+
+      // Asked recently, so not asked again. A seed's suggestion list barely
+      // moves day to day: the seeds that were most productive in an early run
+      // still return 78-80 suggestions today, of which 89% are accounts already
+      // known, and one returned 79 with not a single new one among them. The
+      // call is the whole cost of a seed, and this is how it stops being spent
+      // on an answer we already have.
+      const asked = seedAskedRecently(seed);
+      if (asked) {
+        progress.seedsSkipped++;
+        progress.seedsDone++;
+        return;
+      }
+
       try {
         const suggested = await fetchSimilarAccounts(seed);
+        recordSeedUse(seed);
         for (const s of suggested) {
           const key = s.username.toLowerCase();
           if (seen.has(key)) continue; // already a seed, or suggested twice
@@ -728,6 +758,7 @@ async function checkPhase(
   } finally {
     await log.flush();
     await flushSeen();
+    await flushSeedHistory();
     console.log(`[ig-link-finder] ${seenCount()} accounts now known`);
     const completed = finishRun(myToken);
     // Only a run that actually reached the end of its work list gives up its

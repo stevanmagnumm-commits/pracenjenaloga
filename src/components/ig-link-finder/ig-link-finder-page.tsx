@@ -73,6 +73,8 @@ interface FinderProgress {
   phase: "idle" | "suggesting" | "checking" | "done";
   seedsDone: number;
   seedsTotal: number;
+  /** Seeds skipped because they were already asked in the last few days. */
+  seedsSkipped: number;
   startedAt: number | null;
   checkStartedAt: number | null;
   finishedAt: number | null;
@@ -392,17 +394,27 @@ export function IgLinkFinderPage() {
   // carried over rather than re-checked, so it is good — just not good today.
   const GOOD: LinkBucket[] = ["bio", "signal", "hlname", "story", "known"];
   const goodResults = sorted.filter((r) => GOOD.includes(r.bucket));
+  /**
+   * The ones this run actually found.
+   *
+   * "Checked before" is good, but it is good from an EARLIER run — the account
+   * turned up in the suggestions again and was skipped without a call. Counting
+   * it in one number made a run that found 4,170 accounts offer a download of
+   * 32,561, of which 28,391 were already in hand. Both lists are offered now,
+   * and the new one first, because that is the one worth opening.
+   */
+  const freshResults = goodResults.filter((r) => r.bucket !== "known");
 
-  function handleDownloadGood() {
-    if (!goodResults.length) return;
+  function download(rows: FinderResult[], what: string) {
+    if (!rows.length) return;
     // CRLF, because these lists get opened in Notepad and pasted into Excel.
     const nl = "\r\n";
-    const text = goodResults.map((r) => r.username).join(nl) + nl;
+    const text = rows.map((r) => r.username).join(nl) + nl;
     const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
     const a = document.createElement("a");
     const stamp = new Date().toISOString().slice(0, 10);
     a.href = url;
-    a.download = `link-finder-${stamp}-${goodResults.length}-accounts.txt`;
+    a.download = `link-finder-${stamp}-${what}-${rows.length}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -420,7 +432,10 @@ export function IgLinkFinderPage() {
 
   const phaseLabel =
     progress?.phase === "suggesting"
-      ? `Collecting suggestions — seed ${progress.seedsDone}/${progress.seedsTotal}`
+      ? `Collecting suggestions — seed ${progress.seedsDone}/${progress.seedsTotal}` +
+        (progress.seedsSkipped
+          ? ` · ${progress.seedsSkipped.toLocaleString("en-US")} skipped, asked recently`
+          : "")
       : progress?.phase === "checking" && checkHighlights
         ? "Bio first; highlights only for accounts whose bio is empty"
         : "";
@@ -717,13 +732,27 @@ export function IgLinkFinderPage() {
           <div className="flex flex-wrap items-center gap-2">
             <Button
               size="sm"
-              onClick={handleDownloadGood}
-              disabled={!goodResults.length}
-              title="Every account with a link — in bio, in a highlight, or announced in the bio or a highlight name"
+              onClick={() => download(freshResults, "new")}
+              disabled={!freshResults.length}
+              title="Accounts this run found — the ones not already known from an earlier run"
             >
               <Download className="size-4" />
-              Download {goodResults.length} good
+              Download {freshResults.length.toLocaleString("en-US")} new
             </Button>
+            {goodResults.length > freshResults.length && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => download(goodResults, "all-good")}
+                title="Everything good on this screen, including the accounts carried over from earlier runs"
+              >
+                <Download className="size-4" />
+                All {goodResults.length.toLocaleString("en-US")} good
+                <span className="opacity-60">
+                  (+{(goodResults.length - freshResults.length).toLocaleString("en-US")} known)
+                </span>
+              </Button>
+            )}
             <Button variant="outline" size="sm" onClick={toggleAll}>
               {allSelected ? "Deselect all" : "Select all shown"}
             </Button>

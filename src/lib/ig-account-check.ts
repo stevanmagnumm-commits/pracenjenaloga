@@ -48,6 +48,10 @@ export interface AccountCheckProgress {
 
 const CONCURRENCY = Math.max(1, Number(process.env.IG_ACCOUNT_CONCURRENCY) || 40);
 
+/** How many times an empty highlight list is asked for before it is believed. */
+const ZERO_CONFIRMATIONS = Math.max(1, Number(process.env.IG_HL_ZERO_TRIES) || 3);
+const ZERO_RETRY_DELAY = Number(process.env.IG_HL_ZERO_DELAY ?? 1200);
+
 function fresh(
   total: number,
   wants: AccountCheckWants,
@@ -117,14 +121,36 @@ async function inspect(
   }
 
   if (wants.highlights) {
-    try {
-      const hs = await fetchHighlights(username);
+    // A zero needs confirming; a number does not.
+    //
+    // The endpoint answers with an empty list for accounts that plainly have
+    // highlights, and it does it most on the accounts with the fewest. Probed
+    // six times each: @ashleygarzaa19 returned 1,1,0,0,0,1 — it has one, and
+    // half the answers said none. @chlloerogers19 gave 1,1,1,0,1,0. An account
+    // with fourteen answered 14 every time.
+    //
+    // So only a zero pays for another look, and only zeros all the way down are
+    // reported as none. An account that has any is usually right the first time
+    // and costs one call, exactly as before.
+    let hs: Awaited<ReturnType<typeof fetchHighlights>> = [];
+    let read = false;
+    let lastErr = "";
+    for (let attempt = 0; attempt < ZERO_CONFIRMATIONS; attempt++) {
+      if (attempt) await new Promise((r) => setTimeout(r, ZERO_RETRY_DELAY));
+      try {
+        hs = await fetchHighlights(username);
+        read = true;
+        if (hs.length) break;
+      } catch (err) {
+        lastErr = err instanceof Error ? err.message : String(err);
+      }
+    }
+    if (read) {
       out.highlightCount = hs.length;
       out.highlightTitles = hs.map((h) => h.title).filter(Boolean).slice(0, 12);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+    } else {
       // "could not look" is not "there are none" — the count stays null.
-      out.note = "highlights unreadable: " + msg.slice(0, 80);
+      out.note = "highlights unreadable: " + lastErr.slice(0, 80);
     }
   }
 

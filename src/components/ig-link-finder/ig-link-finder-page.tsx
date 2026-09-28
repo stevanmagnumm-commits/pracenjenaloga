@@ -21,6 +21,7 @@ import {
   UserMinus,
   Languages,
   Globe,
+  Unlink,
   History,
   BookmarkCheck,
 } from "lucide-react";
@@ -44,6 +45,7 @@ type LinkBucket =
   | "outofrange"
   | "wrongscript"
   | "wronglang"
+  | "nofunnel"
   | "seen"
   | "none"
   | "private"
@@ -105,6 +107,7 @@ const BUCKET_ORDER: LinkBucket[] = [
   "outofrange",
   "wrongscript",
   "wronglang",
+  "nofunnel",
   "seen",
   "none",
   "private",
@@ -148,6 +151,12 @@ const BUCKET_META: Record<
   outofrange: {
     label: "Out of range",
     icon: UserMinus,
+    badgeCls: "bg-zinc-500/15 text-zinc-500",
+    textCls: "text-zinc-500",
+  },
+  nofunnel: {
+    label: "Link goes nowhere",
+    icon: Unlink,
     badgeCls: "bg-zinc-500/15 text-zinc-500",
     textCls: "text-zinc-500",
   },

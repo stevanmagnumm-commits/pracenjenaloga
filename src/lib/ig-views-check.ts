@@ -154,7 +154,7 @@ const EMPTY_REELS_DELAY = 3_000;
 // IG_CONFIRM_CONCURRENCY=1 restores the old behaviour without a deploy.
 const BAN_CONFIRMATIONS = 2;
 const RECHECK_DELAY = 8_000;
-const CONFIRM_CONCURRENCY = Math.max(1, Number(process.env.IG_CONFIRM_CONCURRENCY) || 12);
+const CONFIRM_CONCURRENCY = Math.max(1, Number(process.env.IG_CONFIRM_CONCURRENCY) || 24);
 const CONFIRM_RATE_DELAY = Number(process.env.IG_CONFIRM_RATE_DELAY ?? 0);
 
 function freshProgress(total: number, running: boolean): ViewsCheckProgress {

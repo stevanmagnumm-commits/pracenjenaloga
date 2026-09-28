@@ -40,7 +40,7 @@ const IG_PROVIDER = (process.env.IG_PROVIDER || "stable").toLowerCase();
 // that was not enforced anywhere. It is enforced now, in rate-limit.ts, on
 // every call the app makes — so the pool can be sized for throughput and the
 // ceiling is still never crossed.
-const CONCURRENCY = Math.max(1, Number(process.env.IG_BAN_CONCURRENCY) || 20);
+const CONCURRENCY = Math.max(1, Number(process.env.IG_BAN_CONCURRENCY) || 40);
 
 // Delay between consecutive accounts on the same worker. Zero by default now
 // that the limiter paces calls globally; kept as a knob because it is the

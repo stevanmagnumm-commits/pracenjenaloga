@@ -23,7 +23,9 @@ export const BIO_SIGNALS: Signal[] = [
   { label: "yes I have one", re: /yes,?\s*i\s*(have|got)\s*one/i },
   { label: "check my highlights", re: /check\s+(my|the|out my)\s+highlights?/i },
   { label: "only backup", re: /only\s+backup/i },
-  { label: "main", re: /(^|[^a-z])main([^a-z]|$)/i },
+  // "main" only where it names the account it is main OF: "main account",
+  // "main @someone". Alone it is an ordinary word.
+  { label: "main account", re: /(^|[^a-z])main\s*(acc(ount)?|@)/i },
   // The pointing hand 👇 used to be here beside the arrows and has been taken
   // out. Measured on 2,152 accounts where it was the only signal: 1,329 of
   // them already had a bio link, so the hand was pointing at something we
@@ -118,11 +120,14 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   // "llnk": repeated letters collapse to one, so link survives but llnk
   // becomes lnk. Bounded, since lnk is not a fragment of anything else.
   { label: "lnk", re: /(^|[^a-z])li?nks?([^a-z]|$)/i },
-  { label: "spicy", re: /spicy|🌶/iu },
+  // The word anywhere; the pepper only as the whole name ("Miami🌶" is decoration).
+  { label: "spicy", re: /spicy/i },
+  { label: "pepper", re: onlyEmoji("🌶") },
   // Bounded so "here" does not fire on "where", "there", "adhere".
   { label: "here", re: /(^|[^a-z])here([^a-z]|$)/i },
   // "more" is the same shape: More ;) · More 😏 · More of me
-  { label: "more", re: /(^|[^a-z])more([^a-z]|$)/i },
+  // Bare "more" took "More Stories", "more shoots", "more WORM".
+  { label: "more of me", re: /more\s*of\s*me/i },
   // "check" must be checking SOMETHING. With `(it|me)?` optional the whole
   // pattern collapsed to /check/, and qualified "Fit checks", "mirror check",
   // "closet check", "check ins" and "fake check" — 45 occurrences on one run,
@@ -140,13 +145,11 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   // One pattern covers click me · click this · click here · just "click".
   { label: "click", re: /click/i },
   { label: "all of me", re: /all\s*of\s*me/i },
-  { label: "socials", re: /socials?/i },
   // ---------------------------------------------------------------------
   // Names measured on the 49,902-account run, on the clean sample: accounts
   // with exactly one highlight, where the name can only be the one that held
   // the link. Share of that sample in brackets.
   // ---------------------------------------------------------------------
-  { label: "vip", re: /(^|[^a-z])vip([^a-z]|$)/i }, // 81%
   { label: "text me", re: /(text|message|msg)\s*me/i }, // 89%
   { label: "exclusive", re: /exclusiv/i }, // 75%, also exclusiva/exclusivo
   { label: "telegram", re: /telegram/i }, // 91% on the clean sample
@@ -161,38 +164,26 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   // halves the volume. Narrow by choice rather than by evidence. Names like
   // "Here 👀" and "🔗👀" are unaffected: they qualify on the other half.
   { label: "👀", re: /^(\s*👀)+\s*$/u },
-  { label: "🎁", re: /🎁/u },
   { label: "🤫", re: /🤫/u },
   // ---------------------------------------------------------------------
   // Second pass over the same clean sample: every name at 80% or better with
   // at least two hits. Counts in brackets are hits : misses.
   // ---------------------------------------------------------------------
   { label: "chat with me", re: /chat\s*w(ith)?\/?\s*me/i }, // 4:0
-  { label: "about me", re: /about\s*me/i }, // 5:0
   { label: "all me", re: /(^|[^a-z])all\s*me([^a-z]|$)/i }, // 2:0
   { label: "what u want", re: /what\s*(u|you)\s*want/i }, // 2:0
   { label: "my content", re: /my\s*content/i }, // 2:0
-  { label: "the goods", re: /the\s*good/i }, // 4:0 — the goods, the good stuff
-  { label: "free", re: /(^|[^a-z])free([^a-z]|$)/i }, // 2:0
   { label: "klick", re: /klick/i }, // 2:0 — click, spelled the German way
-  { label: "youtube", re: /youtube/i }, // 2:0
   // Telegram with the paper plane swapped for a television: 📺gram.
   { label: "gram", re: /[📺✈🛩]\s*gram/iu }, // 2:0
   // "me" on its own is a coin flip (21:21), but "me" wearing a heart or a
   // smiley is not: me 💕 · me <3 · me :) all hit without a miss.
-  { label: "me +", re: /(^|[^a-z])me\s*([💕💖💗💘💞❤🥰😈]|<3|[:;]-?[)3d])/iu }, // 7:0
   // Emoji, exact, no near relatives.
   { label: "⛓", re: onlyEmoji("⛓", "💥") },
   { label: "🖇", re: onlyEmoji("🖇") },
-  { label: "🔥🔥", re: /🔥\s*🔥/u }, // 4:0 — the pair only; a single 🔥 is 4:3
-  { label: "💜", re: onlyEmoji("💜") },
   { label: "😈", re: onlyEmoji("😈", "💦") },
-  { label: "🥰", re: onlyEmoji("🥰") },
   { label: "🤭", re: onlyEmoji("🤭") },
   { label: "💬", re: onlyEmoji("💬", "😉") },
-  { label: "💓💓", re: /💓\s*💓/u }, // 2:0
-  { label: "👋", re: onlyEmoji("👋") },
-  { label: ";)", re: /[:;]-?\)/ }, // 6:0
   // Whole title only — "of" inside a word is everywhere, "OF" as the entire
   // name of a highlight is OnlyFans. Same for a highlight called just "L".
   { label: "of", re: /^\s*(of|l)\s*$/i }, // 4:0
@@ -204,7 +195,9 @@ export const HIGHLIGHT_SIGNALS: Signal[] = [
   // hits and 0 misses. Across all accounts it is weaker, 331 to 460, but the
   // "misses" there include accounts whose link sits in a highlight the blind
   // search never opened, so that figure is a floor rather than a rate.
-  { label: "💙", re: onlyEmoji("💙", "🩵", "🤍") },
+  // The OnlyFans palette, and only as the pair. A lone heart of any colour is
+  // decoration on half of Instagram.
+  { label: "blue+white", re: /[💙🩵]\s*🤍|🤍\s*[💙🩵]/u },
 ];
 
 /**
@@ -326,4 +319,31 @@ export function isFunnelHighlightTitle(title: string): boolean {
   return HIGHLIGHT_SIGNALS.some(
     (s) => s.re.test(title) || s.re.test(folded) || s.re.test(tight),
   );
+}
+
+/**
+ * Destinations that do not make an account interesting.
+ *
+ * A bio link to YouTube, TikTok, Facebook or Amazon is what an ordinary
+ * creator has: a second platform, or an affiliate shop. It is not a funnel.
+ * An account is only qualified on its links if at least one of them goes
+ * somewhere else — a linktree, a beacons page, a paysite, anything but these.
+ *
+ * Note this judges the DESTINATION, not the account: an account with both a
+ * YouTube link and a linktr.ee still qualifies, on the linktr.ee.
+ */
+const DEAD_END_HOST =
+  /(^|\.)(youtube\.com|youtu\.be|m\.youtube\.com|tiktok\.com|vm\.tiktok\.com|facebook\.com|fb\.com|fb\.me|amazon\.[a-z.]+|amzn\.to)$/i;
+
+export function isDeadEndLink(url: string): boolean {
+  try {
+    return DEAD_END_HOST.test(new URL(url).hostname.replace(/^www\./, ""));
+  } catch {
+    return false;
+  }
+}
+
+/** The links worth qualifying an account on — everything but the dead ends. */
+export function qualifyingLinks(urls: string[]): string[] {
+  return urls.filter((u) => !isDeadEndLink(u));
 }

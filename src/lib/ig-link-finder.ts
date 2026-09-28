@@ -14,7 +14,9 @@ import {
   hasForeignScript,
   hasForeignLangHighlight,
   hasForeignLangBio,
+  qualifyingLinks,
 } from "./link-signals";
+ import { judgeLinks } from "./link-destination";
 
 import {
   saveJson,
@@ -97,6 +99,7 @@ export type LinkBucket =
   | "outofrange"
   | "wrongscript"
   | "wronglang"
+  | "nofunnel"
   | "seen"
   | "known"
   | "none"
@@ -203,6 +206,7 @@ function emptyCounts(): Record<LinkBucket, number> {
     outofrange: 0,
     wrongscript: 0,
     wronglang: 0,
+    nofunnel: 0,
     seen: 0,
     known: 0,
     none: 0,
@@ -390,9 +394,34 @@ async function inspect(
       };
     }
 
+    // A link to YouTube, TikTok, Facebook or Amazon is what an ordinary creator
+    // has — a second platform or an affiliate shop, not a funnel. The account
+    // still qualifies if ANY of its links goes somewhere else; it is the
+    // destination being judged, not the account.
     const bioLinks = bioLinksFromProfile(profile);
-    if (bioLinks.length) {
-      return { ...base, bioLinks, linkHosts: hostsOf(bioLinks), bucket: "bio" };
+    const realLinks = qualifyingLinks(bioLinks);
+    if (realLinks.length) {
+      // Having a linktr.ee turned out to mean almost nothing on its own:
+      // measured on 213 of them from a real run, 87% led only to Instagram,
+      // TikTok, Amazon Storefront, ShopMy and LTK. So the page is opened and
+      // the destination read — no API quota, one ordinary HTTP GET.
+      const dest = await judgeLinks(realLinks);
+      if (dest.verdict === "nothing") {
+        return {
+          ...base,
+          bioLinks,
+          linkHosts: hostsOf(bioLinks),
+          bucket: "nofunnel",
+          note: `link leads nowhere — ${dest.reason}`,
+        };
+      }
+      return {
+        ...base,
+        bioLinks,
+        linkHosts: hostsOf(bioLinks),
+        bucket: "bio",
+        note: dest.verdict === "unreadable" ? `link not verified — ${dest.reason}` : dest.reason,
+      };
     }
 
     // A bio that names its own funnel — "check my highlights", "only backup" —
@@ -545,9 +574,25 @@ async function inspect(
       return { ...base, bucket: "none", note: "no bio link, no highlights" };
     }
 
-    if (found) {
+    if (found && qualifyingLinks(storyLinks).length) {
       const uniq = [...new Set(storyLinks)];
-      return { ...base, storyLinks: uniq, linkHosts: hostsOf(uniq), bucket: "story" };
+      const dest = await judgeLinks(qualifyingLinks(uniq));
+      if (dest.verdict === "nothing") {
+        return {
+          ...base,
+          storyLinks: uniq,
+          linkHosts: hostsOf(uniq),
+          bucket: "nofunnel",
+          note: `highlight link leads nowhere — ${dest.reason}`,
+        };
+      }
+      return {
+        ...base,
+        storyLinks: uniq,
+        linkHosts: hostsOf(uniq),
+        bucket: "story",
+        note: dest.reason,
+      };
     }
 
     // Nothing found — but "found nothing" and "could not look" are different

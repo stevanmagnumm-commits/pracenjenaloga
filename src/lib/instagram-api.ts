@@ -935,3 +935,30 @@ export async function fetchHighlightLinks(highlightId: string): Promise<string[]
   }
   return [...new Set(out)];
 }
+
+/**
+ * When the account last posted, and how many posts the page carries.
+ *
+ * get_ig_user_posts.php returns the items with `taken_at` already on them, so
+ * this is one call — the media-detail endpoint, which the tracker uses for the
+ * same field, would be a second one per post.
+ *
+ * The NEWEST is the maximum of the timestamps, not the first item: Instagram
+ * puts pinned posts at the top of the response, and a pinned post can be a year
+ * old. The first entry on the account this was written against was pinned and
+ * three weeks behind the real latest.
+ */
+export async function fetchLastPostAt(username: string): Promise<Date | null> {
+  const data = (await apiPost("/get_ig_user_posts.php", {
+    username_or_url: username,
+  })) as Record<string, unknown>;
+  const posts = (data.posts as Array<Record<string, unknown>>) || [];
+  let newest = 0;
+  for (const p of posts) {
+    const node = (p.node as Record<string, unknown>) || p;
+    const m = ((node.media as Record<string, unknown>) || node) as Record<string, unknown>;
+    const t = m.taken_at;
+    if (typeof t === "number" && t > newest) newest = t;
+  }
+  return newest ? new Date(newest * 1000) : null;
+}

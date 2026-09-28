@@ -48,8 +48,17 @@ export interface AccountCheckProgress {
 
 const CONCURRENCY = Math.max(1, Number(process.env.IG_ACCOUNT_CONCURRENCY) || 40);
 
-/** How many times an empty highlight list is asked for before it is believed. */
-const ZERO_CONFIRMATIONS = Math.max(1, Number(process.env.IG_HL_ZERO_TRIES) || 3);
+/**
+ * How many times an empty highlight list is asked for before it is believed.
+ *
+ * Three was not enough. @chlloerogers19 answers empty about one time in three,
+ * so three tries still leaves a 4% chance of calling it none — and it did, on
+ * the first run after the fix. Five brings that under half a percent.
+ *
+ * Only genuinely empty accounts pay the full five; an account with any
+ * highlights breaks out on its first non-empty answer, usually the first call.
+ */
+const ZERO_CONFIRMATIONS = Math.max(1, Number(process.env.IG_HL_ZERO_TRIES) || 5);
 const ZERO_RETRY_DELAY = Number(process.env.IG_HL_ZERO_DELAY ?? 1200);
 
 function fresh(

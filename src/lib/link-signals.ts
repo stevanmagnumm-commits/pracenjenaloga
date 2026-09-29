@@ -25,7 +25,7 @@ export const BIO_SIGNALS: Signal[] = [
   { label: "only backup", re: /only\s+backup/i },
   // "main" only where it names the account it is main OF: "main account",
   // "main @someone". Alone it is an ordinary word.
-  { label: "main account", re: /(^|[^a-z])main\s*(acc(ount)?|@)/i },
+  { label: "main account", re: /(^|[^a-z])main\s*(acc(ount)?\b|@)/i },
   // The pointing hand 👇 used to be here beside the arrows and has been taken
   // out. Measured on 2,152 accounts where it was the only signal: 1,329 of
   // them already had a bio link, so the hand was pointing at something we

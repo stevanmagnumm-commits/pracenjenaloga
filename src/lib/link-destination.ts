@@ -41,10 +41,32 @@ const FUNNEL_TITLE = new RegExp(
     // What the page calls the thing behind the button.
     String.raw`\bvip\b|exclusive|premium|\bmy page\b|18\s*\+`,
     // An invitation to talk. "text me" was missing beside the other two.
-    String.raw`want to chat|chat with me|(direct )?message me|\bdm me\b|text me`,
-    String.raw`get to know me`,
+    String.raw`want to chat|chat with me\b|(direct )?message me\b|\bdm me\b|text me\b`,
+    String.raw`get to know me\b`,
     // An invitation to pay, or simply to click.
-    String.raw`spoil me|tip me|my link|click here`,
+    String.raw`spoil me\b|tip me\b|my link\b|click here\b`,
+  ].join("|"),
+  "i",
+);
+
+/**
+ * The half of the wording that is safe to look for ANYWHERE on a page.
+ *
+ * The rest of FUNNEL_TITLE — vip, exclusive, premium, my page, my link, click
+ * here — is only safe inside structured link titles, where the words are the
+ * account's own button labels. Searched across a whole page they are ordinary
+ * e-commerce copy: of 60 non-aggregator links taken from a live run, 21 were
+ * scored as funnels on those words alone, and they were a hair salon, a
+ * treadmill shop, a supplements store, a gym price list, an Eventbrite concert,
+ * a Twitch channel and half a dozen boutiques.
+ *
+ * What remains here is what a shop does not say.
+ */
+const STRONG_TITLE = new RegExp(
+  [
+    String.raw`onlyfans|only fans|fansly|fanvue`,
+    String.raw`(direct )?message me\b|\bdm me\b|text me\b|want to chat|chat with me\b`,
+    String.raw`spoil me\b|tip me\b|get to know me\b`,
   ].join("|"),
   "i",
 );
@@ -219,8 +241,8 @@ export async function readDestination(url: string): Promise<Destination> {
     } else if (AGE_GATE.test(html)) {
       // Survives even when the links are drawn by JavaScript and invisible.
       out = { verdict: "funnel", reason: "page is age-gated", hosts };
-    } else if (structured ? FUNNEL_TITLE.test(titles) : FUNNEL_TITLE.test(stripSeoFlags(html))) {
-      out = { verdict: "funnel", reason: "funnel wording in the link titles", hosts };
+    } else if (structured ? FUNNEL_TITLE.test(titles) : STRONG_TITLE.test(stripSeoFlags(html))) {
+      out = { verdict: "funnel", reason: "funnel wording on the page", hosts };
     } else if (chat.length) {
       out = { verdict: "funnel", reason: `links to ${chat[0]}`, hosts };
     } else {
@@ -239,9 +261,15 @@ export async function judgeLinks(urls: string[]): Promise<Destination> {
   const direct = urls.find((u) => PAYSITE.test(u));
   if (direct) return { verdict: "funnel", reason: "direct paysite link", hosts: [] };
 
-  const pages = urls.filter(isAggregator);
+  // Every link is opened, not just the known aggregators. Restricting it to
+  // those left 58% of accounts passing unexamined on one live run, and their
+  // links were shopvvshair.com, influencer.fashionnova.com, a gym price list
+  // and a hair boutique. Three of the clearest funnels in the sample —
+  // itsjadelin.me, cowgirljolene.com, adoragwen.com — were plain domains too,
+  // so there was never a reason to treat them differently.
+  const pages = urls.slice(0, 4);
   if (!pages.length) {
-    return { verdict: "funnel", reason: "link is not an aggregator", hosts: [] };
+    return { verdict: "unreadable", reason: "no link to read", hosts: [] };
   }
 
   let sawNothing: Destination | null = null;

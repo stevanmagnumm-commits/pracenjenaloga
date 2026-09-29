@@ -333,7 +333,7 @@ export function isFunnelHighlightTitle(title: string): boolean {
  * YouTube link and a linktr.ee still qualifies, on the linktr.ee.
  */
 const DEAD_END_HOST =
-  /(^|\.)(youtube\.com|youtu\.be|m\.youtube\.com|tiktok\.com|vm\.tiktok\.com|facebook\.com|fb\.com|fb\.me|amazon\.[a-z.]+|amzn\.to)$/i;
+  /(^|\.)(instagram\.com|instagr\.am|youtube\.com|youtu\.be|m\.youtube\.com|tiktok\.com|vm\.tiktok\.com|facebook\.com|fb\.com|fb\.me|amazon\.[a-z.]+|amzn\.to)$/i;
 
 export function isDeadEndLink(url: string): boolean {
   try {

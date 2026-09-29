@@ -33,40 +33,46 @@ const PAYSITE =
 // funnel.
 const CHAT_HOST = /^(t\.me|telegram\.me|snapchat\.com|story\.snapchat\.com|cash\.app|venmo\.com|throne\.com|throne\.me)$/i;
 
-/** Titles that say the same thing the paysite would. */
-const FUNNEL_TITLE = new RegExp(
-  [
-    // The destination named in the button rather than the URL.
-    String.raw`onlyfans|only fans|fansly|fanvue`,
-    // What the page calls the thing behind the button.
-    String.raw`\bvip\b|exclusive|premium|\bmy page\b|18\s*\+`,
-    // An invitation to talk. "text me" was missing beside the other two.
-    String.raw`want to chat|chat with me\b|(direct )?message me\b|\bdm me\b|text me\b`,
-    String.raw`get to know me\b`,
-    // An invitation to pay, or simply to click.
-    String.raw`spoil me\b|tip me\b|my link\b|click here\b`,
-  ].join("|"),
-  "i",
-);
+/**
+ * The wording that is safe to look for ANYWHERE on a page.
+ *
+ * The rest of FUNNEL_TITLE below - the bare words vip, exclusive, premium,
+ * click here - is only safe inside a link's own button label. Searched across
+ * a whole page they are ordinary e-commerce copy: of 60 non-aggregator links
+ * from a live run, 21 were scored as funnels on those words alone, and they
+ * were a hair salon, a treadmill shop, a gym price list and a concert.
+ *
+ * What is here is what a shop does not say.
+ */
+const STRONG_PARTS = [
+  String.raw`onlyfans|only fans|fansly|fanvue`,
+  String.raw`(direct )?message me\b|\bdm me\b|text me\b|want to chat|chat with me\b`,
+  String.raw`spoil me\b|tip me\b|get to know me\b`,
+  // Phrases, never the bare word. Measured on 69 ordinary bio links from a
+  // live run: "exclusive page", "premium page", "my page" and "my link" hit
+  // none of them, "vip page" hit one. The bare words hit 21 of 60.
+  String.raw`\b(vip|exclusive|premium)["'\u201c\u201d\u2018\u2019\s]*(\w+\s+)?(page|content|room|club|access|section|stuff|videos?|photos?)\b`,
+  String.raw`\bmy\s*(vip|exclusive|premium|page|link)\b`,
+  // Taken off 13 pages that were real funnels and had been read as ordinary.
+  // Each hit 0 of 56 control pages from the same run, so they cost nothing.
+  String.raw`(see\s+)?more of me\b|(come\s+)?talk to me\b`,
+  String.raw`add me (here|on)\b|send (me a )?message\b`,
+  String.raw`\+\s*18\b|online now\b|limited time offer\b`,
+];
+
+const STRONG_TITLE = new RegExp(STRONG_PARTS.join("|"), "i");
 
 /**
- * The half of the wording that is safe to look for ANYWHERE on a page.
+ * Titles that say the same thing the paysite would.
  *
- * The rest of FUNNEL_TITLE — vip, exclusive, premium, my page, my link, click
- * here — is only safe inside structured link titles, where the words are the
- * account's own button labels. Searched across a whole page they are ordinary
- * e-commerce copy: of 60 non-aggregator links taken from a live run, 21 were
- * scored as funnels on those words alone, and they were a hair salon, a
- * treadmill shop, a supplements store, a gym price list, an Eventbrite concert,
- * a Twitch channel and half a dozen boutiques.
- *
- * What remains here is what a shop does not say.
+ * Everything STRONG_TITLE looks for - a phrase safe on a whole page is safe
+ * in a button label - plus the bare words that only a button may use.
  */
-const STRONG_TITLE = new RegExp(
+const FUNNEL_TITLE = new RegExp(
   [
-    String.raw`onlyfans|only fans|fansly|fanvue`,
-    String.raw`(direct )?message me\b|\bdm me\b|text me\b|want to chat|chat with me\b`,
-    String.raw`spoil me\b|tip me\b|get to know me\b`,
+    ...STRONG_PARTS,
+    String.raw`\bvip\b|exclusive|premium|18\s*\+`,
+    String.raw`click here\b`,
   ].join("|"),
   "i",
 );

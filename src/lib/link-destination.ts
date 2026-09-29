@@ -76,7 +76,7 @@ const STRONG_TITLE = new RegExp(
  * "You must be 18 or older" · "18+ Age Check" · "May Contain Sensitive Content"
  */
 const AGE_GATE =
-  /must be 18|18\s*or older|are you 18|18\s*\+\s*(only|age|content)|age\s*(check|verification|gate)|sensitive content|adult content|i am under 18|enter if you are 18/i;
+  /must be 18|18\s*or older|are you 18|18\s*\+(?!\s*(years?|yrs?|month|day|hour|minute|location|store|color|colour|style|flavor|flavour|option|brand|shade|design|item|product|page|piece|pack|count|ct\b))|age\s*(check|verification|gate)|sensitive content|adult content|i am under 18|enter if you are 18/i;
 
 export type DestinationVerdict = "funnel" | "nothing" | "unreadable";
 

@@ -1,3 +1,5 @@
+import { fetch as undiciFetch, ProxyAgent } from "undici";
+
 /**
  * What is actually behind a link-in-bio page.
  *
@@ -205,6 +207,69 @@ function stripSeoFlags(html: string): string {
   return html.replace(/"is[A-Za-z]*(Onlyfans|OnlyFans)[A-Za-z]*"\s*:\s*(true|false)/g, "");
 }
 
+/**
+ * The page, fetched directly and then, if the site refused, through a proxy.
+ *
+ * Linktree answers 429 with an empty body to this server for particular
+ * profiles. It is not a rate limit: one request after thirty seconds idle
+ * still gets it, while the next profile answers 200. It is not a signal
+ * either - 13 of 14 profiles already known to be funnels answer 200. And it
+ * is not the IP, because the same profile answers 200 from a home line.
+ *
+ * Measured on 30 linktree pages from a live run: 12 opened directly, and all
+ * 30 opened once the refusals were retried through a proxy. Beacons refuses
+ * either way and stays unreadable.
+ *
+ * The list comes from IG_PAGE_PROXIES so no credential lives in the repo.
+ * Node's global fetch will not take a dispatcher built by the app's own copy
+ * of undici, so the proxied call goes through undici's fetch.
+ */
+const PROXIES = (process.env.IG_PAGE_PROXIES || "")
+  .split(/[,\s]+/)
+  .map((s) => s.trim())
+  .filter(Boolean);
+let agents: ProxyAgent[] | null = null;
+let nextProxy = 0;
+
+function proxyAgent(): ProxyAgent | null {
+  if (!PROXIES.length) return null;
+  if (!agents) agents = PROXIES.map((p) => new ProxyAgent(p));
+  return agents[nextProxy++ % agents.length];
+}
+
+const PAGE_HEADERS = {
+  "User-Agent": UA,
+  Accept: "text/html,application/xhtml+xml",
+};
+
+async function fetchPage(url: string): Promise<string> {
+  try {
+    const res = await fetch(url, {
+      headers: PAGE_HEADERS,
+      redirect: "follow",
+      signal: AbortSignal.timeout(PAGE_TIMEOUT_MS),
+    });
+    if (res.ok) return (await res.text()).slice(0, 700_000);
+  } catch {
+    // fall through to the proxy
+  }
+
+  const agent = proxyAgent();
+  if (!agent) return "";
+  try {
+    const res = await undiciFetch(url, {
+      headers: PAGE_HEADERS,
+      redirect: "follow",
+      dispatcher: agent,
+      signal: AbortSignal.timeout(PAGE_TIMEOUT_MS),
+    });
+    if (res.ok) return (await res.text()).slice(0, 700_000);
+  } catch {
+    // unreadable
+  }
+  return "";
+}
+
 export async function readDestination(url: string): Promise<Destination> {
   const hit = cache.get(url);
   if (hit) return hit;
@@ -212,14 +277,7 @@ export async function readDestination(url: string): Promise<Destination> {
   await slot();
   let html = "";
   try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml" },
-      redirect: "follow",
-      signal: AbortSignal.timeout(PAGE_TIMEOUT_MS),
-    });
-    if (res.ok) html = (await res.text()).slice(0, 700_000);
-  } catch {
-    // left empty — treated as unreadable below
+    html = await fetchPage(url);
   } finally {
     release();
   }

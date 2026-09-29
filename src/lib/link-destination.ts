@@ -51,7 +51,7 @@ const STRONG_PARTS = [
   // Phrases, never the bare word. Measured on 69 ordinary bio links from a
   // live run: "exclusive page", "premium page", "my page" and "my link" hit
   // none of them, "vip page" hit one. The bare words hit 21 of 60.
-  String.raw`\b(vip|exclusive|premium)["'\u201c\u201d\u2018\u2019\s]*(\w+\s+)?(page|content|room|club|access|section|stuff|videos?|photos?)\b`,
+  String.raw`\b(vip|exclusive|premium)["'“”‘’\s]*(\w+\s+)?(page|content|room|club|access|section|stuff|videos?|photos?)\b`,
   String.raw`\bmy\s*(vip|exclusive|premium|page|link)\b`,
   // Taken off 13 pages that were real funnels and had been read as ordinary.
   // Each hit 0 of 56 control pages from the same run, so they cost nothing.

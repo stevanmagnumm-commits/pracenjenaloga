@@ -34,8 +34,20 @@ const PAYSITE =
 const CHAT_HOST = /^(t\.me|telegram\.me|snapchat\.com|story\.snapchat\.com|cash\.app|venmo\.com|throne\.com|throne\.me)$/i;
 
 /** Titles that say the same thing the paysite would. */
-const FUNNEL_TITLE =
-  /onlyfans|fansly|fanvue|\bvip\b|exclusive|premium|want to chat|chat with me|(direct )?message me|\bdm me\b|spoil me|tip me|my link|click here|18\s*\+|only fans/i;
+const FUNNEL_TITLE = new RegExp(
+  [
+    // The destination named in the button rather than the URL.
+    String.raw`onlyfans|only fans|fansly|fanvue`,
+    // What the page calls the thing behind the button.
+    String.raw`\bvip\b|exclusive|premium|\bmy page\b|18\s*\+`,
+    // An invitation to talk. "text me" was missing beside the other two.
+    String.raw`want to chat|chat with me|(direct )?message me|\bdm me\b|text me`,
+    String.raw`get to know me`,
+    // An invitation to pay, or simply to click.
+    String.raw`spoil me|tip me|my link|click here`,
+  ].join("|"),
+  "i",
+);
 
 /**
  * An age gate. Strong on its own, and visible even when the links are not:

@@ -16,11 +16,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Search already in progress", progress }, { status: 409 });
   }
 
-  const { seeds, checkHighlights, maxCandidates, resume } = (await request.json()) as {
+  const { seeds, checkHighlights, maxCandidates, resume, ignoreSeedHistory } = (await request.json()) as {
     seeds?: string[];
     checkHighlights?: boolean;
     maxCandidates?: number;
     resume?: boolean;
+    ignoreSeedHistory?: boolean;
   };
 
   // Continue an interrupted run: the work list comes off disk, the suggestions
@@ -42,7 +43,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Fire and forget — the UI polls GET for progress, same as the other checkers.
-  runLinkFinder(seeds, { checkHighlights, maxCandidates });
+  runLinkFinder(seeds, { checkHighlights, maxCandidates, ignoreSeedHistory });
 
   return NextResponse.json({
     message: `Started from ${seeds.length} seed account(s)`,

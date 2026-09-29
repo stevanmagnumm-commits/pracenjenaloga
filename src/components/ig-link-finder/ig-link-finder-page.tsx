@@ -219,6 +219,7 @@ function fmtLeft(ms: number): string {
 export function IgLinkFinderPage() {
   const [input, setInput] = useState("");
   const [checkHighlights, setCheckHighlights] = useState(true);
+  const [ignoreSeedHistory, setIgnoreSeedHistory] = useState(false);
   const [progress, setProgress] = useState<FinderProgress | null>(null);
   const [filter, setFilter] = useState<"all" | LinkBucket>("all");
   const [copied, setCopied] = useState(false);
@@ -308,7 +309,7 @@ export function IgLinkFinderPage() {
     const res = await fetch("/api/ig-link-finder", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ seeds, checkHighlights }),
+      body: JSON.stringify({ seeds, checkHighlights, ignoreSeedHistory }),
     });
     if (res.ok) {
       if (pollRef.current) clearInterval(pollRef.current);
@@ -540,6 +541,20 @@ export function IgLinkFinderPage() {
           </span>
         </label>
 
+        <label className="flex items-center gap-2 text-sm text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={ignoreSeedHistory}
+            onChange={(e) => setIgnoreSeedHistory(e.target.checked)}
+            disabled={progress?.running}
+            className="size-4 accent-amber-500"
+          />
+          Ask seeds again even if they were used in the last 10 days
+          <span className="text-xs">
+            (off by default — a recently-asked seed returns 89% accounts already known)
+          </span>
+        </label>
+
         <div className="flex items-center gap-2">
           <Button onClick={handleStart} disabled={progress?.running || !input.trim()}>
             {progress?.running ? (
@@ -566,6 +581,27 @@ export function IgLinkFinderPage() {
       {progress?.abortedReason && (
         <div className="rounded-md border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-400">
           <span className="font-semibold">Run stopped.</span> {progress.abortedReason}
+        </div>
+      )}
+
+      {!progress?.running && (progress?.seedsSkipped ?? 0) > 0 && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-4 py-3">
+          <p className="text-sm">
+            <span className="font-medium text-amber-400">
+              {progress!.seedsSkipped.toLocaleString("en-US")} of{" "}
+              {progress!.seedsTotal.toLocaleString("en-US")} seeds were skipped.
+            </span>{" "}
+            They were already asked for suggestions within the last 10 days, so
+            they cost nothing and returned nothing.
+            {progress!.seedsSkipped >= progress!.seedsTotal && (
+              <> That was every seed in the list, which is why the run finished instantly.</>
+            )}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            A seed&apos;s suggestion list barely moves day to day — measured, 89%
+            of what a recently-asked seed returns is already known. Tick
+            &quot;ask them anyway&quot; below to override it for one run.
+          </p>
         </div>
       )}
 

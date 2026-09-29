@@ -622,7 +622,7 @@ async function inspect(
 
 export async function runLinkFinder(
   seeds: string[],
-  opts: { checkHighlights?: boolean; maxCandidates?: number } = {},
+  opts: { checkHighlights?: boolean; maxCandidates?: number; ignoreSeedHistory?: boolean } = {},
 ): Promise<void> {
   if (progress.running) return;
 
@@ -685,7 +685,7 @@ export async function runLinkFinder(
       // known, and one returned 79 with not a single new one among them. The
       // call is the whole cost of a seed, and this is how it stops being spent
       // on an answer we already have.
-      const asked = seedAskedRecently(seed);
+      const asked = opts.ignoreSeedHistory ? null : seedAskedRecently(seed);
       if (asked) {
         progress.seedsSkipped++;
         progress.seedsDone++;

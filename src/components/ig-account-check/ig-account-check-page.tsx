@@ -13,9 +13,13 @@ import {
   Images,
   FileStack,
   CalendarClock,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useRowSelection, openInstagramTabs } from "@/lib/use-row-selection";
+import { byLastPost, nextSortMode, type SortMode } from "@/lib/sort-last-post";
 import {
   Table,
   TableBody,
@@ -82,6 +86,7 @@ export function IgAccountCheckPage() {
   const [filter, setFilter] = useState<FilterMode>("all");
   const [copied, setCopied] = useState(false);
   const [shown, setShown] = useState(300);
+  const [sort, setSort] = useState<SortMode>("none");
   const [now, setNow] = useState(() => Date.now());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -177,6 +182,14 @@ export function IgAccountCheckPage() {
     if (filter === "problem") return r.status !== "ok";
     return true;
   });
+
+
+  /** Newest or oldest first; see byLastPost for what an empty date does. */
+  function sortRows(list: CheckResult[]): CheckResult[] {
+    return sort === "none" ? list : [...list].sort(byLastPost(sort));
+  }
+
+  const visible = sortRows(filtered);
 
   const { selected, toggle, clear, toggleAll, allSelected } = useRowSelection(
     filtered.map((r) => r.username),
@@ -389,14 +402,14 @@ export function IgAccountCheckPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" onClick={() => download(withHl, "with-highlights")} disabled={!withHl.length}>
+            <Button size="sm" onClick={() => download(sortRows(withHl), "with-highlights")} disabled={!withHl.length}>
               <Download className="size-4" />
               {withHl.length.toLocaleString("en-US")} with highlights
             </Button>
             <Button
               variant="outline"
               size="sm"
-              onClick={() => download(noHl, "no-highlights")}
+              onClick={() => download(sortRows(noHl), "no-highlights")}
               disabled={!noHl.length}
             >
               <Download className="size-4" />
@@ -464,12 +477,38 @@ export function IgAccountCheckPage() {
                   <TableHead>Username</TableHead>
                   {progress?.wants.highlights && <TableHead className="w-28">Highlights</TableHead>}
                   {progress?.wants.posts && <TableHead className="w-24">Posts</TableHead>}
-                  {progress?.wants.lastPost && <TableHead className="w-40">Last post</TableHead>}
+                  {progress?.wants.lastPost && (
+                    <TableHead className="w-40">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSort(nextSortMode(sort))
+                        }
+                        className="flex items-center gap-1.5 hover:text-foreground transition-colors"
+                        title={
+                          sort === "newest"
+                            ? "Newest first - click for oldest first"
+                            : sort === "oldest"
+                              ? "Oldest first - click to stop sorting"
+                              : "Click to sort by last post"
+                        }
+                      >
+                        Last post
+                        {sort === "newest" ? (
+                          <ArrowDown className="size-3.5" />
+                        ) : sort === "oldest" ? (
+                          <ArrowUp className="size-3.5" />
+                        ) : (
+                          <ArrowUpDown className="size-3.5 opacity-40" />
+                        )}
+                      </button>
+                    </TableHead>
+                  )}
                   <TableHead>Highlight names</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.slice(0, shown).map((r, idx) => (
+                {visible.slice(0, shown).map((r, idx) => (
                   <TableRow key={r.username}>
                     <TableCell className="pl-4" onClick={(e) => e.stopPropagation()}>
                       <label className="flex items-center justify-center cursor-pointer py-2 px-1">

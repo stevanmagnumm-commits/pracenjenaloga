@@ -35,12 +35,16 @@ import {
   VIEW_BUCKET_ORDER,
   VIEW_BUCKET_LABEL,
   type ViewBucket,
+  RECENT_WINDOW,
 } from "@/lib/view-buckets";
 
 interface ViewsCheckResult {
   username: string;
   avgViews: number | null;
   videosCounted: number;
+  /** Absent on rows graded before the short window existed. */
+  avgViews6?: number | null;
+  videosCounted6?: number;
   bucket: ViewBucket;
   note?: string;
 }
@@ -61,7 +65,7 @@ interface CheckProgress {
 }
 
 type FilterMode = "all" | ViewBucket;
-type SortKey = "avg" | "videos" | "bucket";
+type SortKey = "avg" | "avg6" | "videos" | "bucket";
 
 // Presentation only — the labels and ordering come from lib/view-buckets so
 // the UI can never disagree with how the server bucketed a result.
@@ -227,8 +231,18 @@ export function IgViewsCheckerPage() {
       if (d !== 0) return sortDir === "asc" ? d : -d;
       return (b.avgViews ?? -1) - (a.avgViews ?? -1);
     }
-    const av = sortKey === "avg" ? a.avgViews : a.videosCounted || null;
-    const bv = sortKey === "avg" ? b.avgViews : b.videosCounted || null;
+    // A row with no number for the column being sorted sinks, the same way an
+    // ungraded row does. On the short window that includes rows graded before
+    // it existed: they have no six-reel figure, and showing them as zero would
+    // invent one.
+    const pick = (r: ViewsCheckResult) =>
+      sortKey === "avg"
+        ? r.avgViews
+        : sortKey === "avg6"
+          ? (r.avgViews6 ?? null)
+          : r.videosCounted || null;
+    const av = pick(a);
+    const bv = pick(b);
     if (av === null && bv === null) return 0;
     if (av === null) return 1;
     if (bv === null) return -1;
@@ -298,7 +312,7 @@ export function IgViewsCheckerPage() {
           {VIEWS_WINDOW} reels, pinned posts excluded — the same window the
           tracker shows as &quot;Avg (last {VIEWS_WINDOW})&quot;. Accounts do not
           need to be in the tracker; each one is scraped live. Click the Avg
-          views, Videos or Bucket headers to sort.
+          views, Last {RECENT_WINDOW}, Videos or Bucket headers to sort.
         </p>
       </div>
 
@@ -509,6 +523,17 @@ export function IgViewsCheckerPage() {
                       <SortMark active={sortKey === "avg"} dir={sortDir} />
                     </button>
                   </TableHead>
+                  <TableHead className="text-right w-28">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort("avg6")}
+                      className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+                      title={`Mean views over the last ${RECENT_WINDOW} reels. Shown only - the bucket always comes from the last ${VIEWS_WINDOW}.`}
+                    >
+                      Last {RECENT_WINDOW}
+                      <SortMark active={sortKey === "avg6"} dir={sortDir} />
+                    </button>
+                  </TableHead>
                   <TableHead className="text-right w-20">
                     <button
                       type="button"
@@ -572,6 +597,12 @@ export function IgViewsCheckerPage() {
                         className={`text-right font-semibold tabular-nums ${meta.textCls}`}
                       >
                         {result.avgViews === null ? "—" : formatNumber(result.avgViews)}
+                      </TableCell>
+
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {result.avgViews6 === null || result.avgViews6 === undefined
+                          ? "—"
+                          : formatNumber(result.avgViews6)}
                       </TableCell>
                       <TableCell className="text-right text-xs text-muted-foreground tabular-nums">
                         {result.videosCounted || "—"}

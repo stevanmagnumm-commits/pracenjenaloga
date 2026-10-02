@@ -21,6 +21,18 @@
 export const VIEWS_WINDOW = 36;
 
 /**
+ * A second, shorter window shown beside the first.
+ *
+ * The grade still comes from VIEWS_WINDOW, so nothing about who lands in which
+ * bucket changes. This one answers a different question: 36 reels can reach
+ * three weeks back, long enough for an account that has just fallen off to
+ * still read as healthy. Six says what is happening now.
+ *
+ * It costs no extra call - the six come out of the reels already fetched.
+ */
+export const RECENT_WINDOW = 6;
+
+/**
  * Three graded buckets plus four distinct reasons an account carries no number.
  * They used to be a single "No data" pile, which was useless in practice: a
  * banned account, a brand-new empty one, a photos-only one and a request the

@@ -1,6 +1,12 @@
-import { fetchLatestStubs, fetchProfile, isQuotaExhausted } from "./instagram-api";
+import {
+  fetchLatestStubs,
+  fetchProfile,
+  isQuotaExhausted,
+  dateFromMediaPk,
+} from "./instagram-api";
 import {
   VIEWS_WINDOW,
+  RECENT_WINDOW,
   bucketForAvg,
   emptyBucketCounts,
   type BucketCounts,
@@ -71,6 +77,13 @@ export interface ViewsCheckResult {
   avgViews: number | null;
   /** How many reels the average is actually based on (can be < the window). */
   videosCounted: number;
+  /**
+   * The same thing over RECENT_WINDOW reels instead, shown beside it. The
+   * bucket never comes from this one. Absent on rows written before it
+   * existed, which is why it is optional rather than null.
+   */
+  avgViews6?: number | null;
+  videosCounted6?: number;
   bucket: ViewBucket;
   /** Present whenever the account could not be graded, explaining why. */
   note?: string;
@@ -267,7 +280,15 @@ async function probeProfile(username: string): Promise<ProfileState> {
 }
 
 function ungraded(username: string, bucket: ViewBucket, note: string): ViewsCheckResult {
-  return { username, avgViews: null, videosCounted: 0, bucket, note };
+  return {
+    username,
+    avgViews: null,
+    videosCounted: 0,
+    avgViews6: null,
+    videosCounted6: 0,
+    bucket,
+    note,
+  };
 }
 
 /**
@@ -278,6 +299,18 @@ function ungraded(username: string, bucket: ViewBucket, note: string): ViewsChec
  * 0 can also mean the field was missing from a half-formed response, and a live
  * account with posts must never be filed as empty.
  */
+/**
+ * When a reel was posted, read out of its media id.
+ *
+ * An id whose date will not parse sorts to the back rather than to 1970, so one
+ * unreadable id cannot push itself into the recent window and quietly take the
+ * place of a reel that belongs there.
+ */
+function pkTime(igMediaId: string): number {
+  const d = dateFromMediaPk(igMediaId);
+  return d ? d.getTime() : -Infinity;
+}
+
 async function gradeAlive(
   username: string,
   mediaCount: number | null,
@@ -296,10 +329,23 @@ async function gradeAlive(
     if (stubs.length > 0) {
       const total = stubs.reduce((sum, s) => sum + s.viewCount, 0);
       const avgViews = Math.round(total / stubs.length);
+      // The newest few out of the reels already in hand - no second call.
+      //
+      // Sorted by the date inside each media id rather than trusting the order
+      // they arrived in. Measured on six accounts the provider did answer
+      // newest first every time, but an order that is only ever observed is not
+      // an order that is promised, and the wrong six would read as a real
+      // number rather than as a mistake.
+      const recent = [...stubs]
+        .sort((a, b) => pkTime(b.igMediaId) - pkTime(a.igMediaId))
+        .slice(0, RECENT_WINDOW);
+      const recentTotal = recent.reduce((sum, s) => sum + s.viewCount, 0);
       return {
         username,
         avgViews,
         videosCounted: stubs.length,
+        avgViews6: recent.length ? Math.round(recentTotal / recent.length) : null,
+        videosCounted6: recent.length,
         bucket: bucketForAvg(avgViews),
       };
     }

@@ -502,7 +502,22 @@ async function viewsRun(usernames: string[]): Promise<void> {
  * just its tail: the accounts answered before the restart are replayed into the
  * results, and only the unanswered ones are actually paid for again.
  */
-async function gradeBatch(
+/**
+ * The lane is marked around the WORK, not around the call that starts it.
+ * Every resume hands this off with `void` and returns at once, so a mark taken
+ * on the entry point would be dropped while the run carried on untagged - and
+ * a live check sitting beside it would never be put on its share. Nesting is
+ * harmless: the lane is counted, not a flag.
+ */
+function gradeBatch(
+  cleaned: string[],
+  total: number,
+  already: ViewsCheckResult[],
+): Promise<void> {
+  return runInLane("views", () => gradeBatchWork(cleaned, total, already));
+}
+
+async function gradeBatchWork(
   cleaned: string[],
   total: number,
   already: ViewsCheckResult[],

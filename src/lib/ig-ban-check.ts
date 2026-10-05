@@ -182,7 +182,18 @@ async function banRun(usernames: string[]): Promise<void> {
 }
 
 /** The loop itself, shared by a fresh run and a resumed one. */
-async function runBatch(cleaned: string[]): Promise<void> {
+/**
+ * The lane is marked around the WORK, not around the call that starts it.
+ * Every resume hands this off with `void` and returns at once, so a mark taken
+ * on the entry point would be dropped while the run carried on untagged - and
+ * a live check sitting beside it would never be put on its share. Nesting is
+ * harmless: the lane is counted, not a flag.
+ */
+function runBatch(cleaned: string[]): Promise<void> {
+  return runInLane("ban", () => runBatchWork(cleaned));
+}
+
+async function runBatchWork(cleaned: string[]): Promise<void> {
   const log = new ResultLog<IgBanCheckResult>(RESULTS_FILE);
 
   try {

@@ -754,7 +754,22 @@ async function finderRun(
  * Phase 2 — inspect each candidate. Shared by a fresh run and a resumed one, so
  * the two cannot drift apart in behaviour.
  */
-async function checkPhase(
+/**
+ * The lane is marked around the WORK, not around the call that starts it.
+ * Every resume hands this off with `void` and returns at once, so a mark taken
+ * on the entry point would be dropped while the run carried on untagged - and
+ * a live check sitting beside it would never be put on its share. Nesting is
+ * harmless: the lane is counted, not a flag.
+ */
+function checkPhase(
+  work: Candidate[],
+  checkHighlights: boolean,
+  myToken: number,
+): Promise<void> {
+  return runInLane("finder", () => checkPhaseWork(work, checkHighlights, myToken));
+}
+
+async function checkPhaseWork(
   work: Candidate[],
   checkHighlights: boolean,
   myToken: number,

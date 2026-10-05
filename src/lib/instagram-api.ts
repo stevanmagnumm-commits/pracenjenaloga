@@ -425,6 +425,43 @@ export function dateFromMediaPk(pk: string): Date | null {
   return null;
 }
 
+/**
+ * A provider failure dressed up as an absence.
+ *
+ * Measured text, straight off the wire:
+ *   "Profile data not found. Received 429 Too Many Requests."
+ *
+ * The words "not found" are in it, yet nothing was ever looked up. Five tools
+ * decide "banned or deleted" by looking for that wording in the thrown message,
+ * so this sentence has to be kept away from it: on one 83-account run it
+ * produced 70 confirmed bans, and 19 of 20 of those accounts answered normally
+ * seconds later with 180-270 posts each.
+ *
+ * A real absence arrives as "data not found" on its own, or alongside 404.
+ */
+const NOT_A_VERDICT =
+  /rate.?limit|too many requests|received\s+(?!404)\d{3}|timed?\s*out|try again|temporarily|unavailable|bad gateway|gateway time/i;
+
+/**
+ * The error to throw for a provider `error` sentence. The WORDING is the
+ * verdict - "Profile not found" means gone, anything else means the lookup
+ * failed - so a failure must never borrow the absence wording, not even as a
+ * quoted tail. Exported because that distinction is worth testing directly.
+ */
+export function profileErrorFor(username: string, errText: string): Error {
+  // Checked before the absence test, because this text satisfies both.
+  if (NOT_A_VERDICT.test(errText)) {
+    const why =
+      errText.replace(/\b(profile\s+)?data not found\.?/i, "").trim() ||
+      "provider refused the lookup";
+    return new Error(`Profile check failed for @${username}: ${why}`);
+  }
+  if (/not found|does not exist|invalid username/i.test(errText)) {
+    return new Error(`Profile not found: @${username} (${errText})`);
+  }
+  return new Error(`Profile error for @${username}: ${errText}`);
+}
+
 export async function fetchProfile(username: string): Promise<NormalizedProfile> {
   if (IG_PROVIDER === "mediacrawlers") {
     return fetchProfileMediacrawlers(username);
@@ -438,10 +475,7 @@ export async function fetchProfile(username: string): Promise<NormalizedProfile>
   // accounts. That explicit sentence is the ONLY thing allowed to mean "gone".
   const errText = typeof user.error === "string" ? user.error : "";
   if (errText) {
-    if (/not found|does not exist|invalid username/i.test(errText)) {
-      throw new Error(`Profile not found: @${username} (${errText})`);
-    }
-    throw new Error(`Profile error for @${username}: ${errText}`);
+    throw profileErrorFor(username, errText);
   }
 
   // Anything else unrecognisable is a broken answer, not a verdict. Calling it
@@ -765,10 +799,7 @@ export async function fetchProfileRaw(username: string): Promise<Record<string, 
 
   const errText = typeof user.error === "string" ? user.error : "";
   if (errText) {
-    if (/not found|does not exist|invalid username/i.test(errText)) {
-      throw new Error(`Profile not found: @${username} (${errText})`);
-    }
-    throw new Error(`Profile error for @${username}: ${errText}`);
+    throw profileErrorFor(username, errText);
   }
   if (!user.pk && !user.id && !user.username) {
     throw new Error(

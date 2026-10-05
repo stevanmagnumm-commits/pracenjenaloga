@@ -4,6 +4,7 @@ import {
   fetchLastPostAt,
   isQuotaExhausted,
 } from "./instagram-api";
+import { runInLane, laneWorkers } from "./api-lanes";
 
 /**
  * Three small questions about an account, each asked only when it is ticked.
@@ -196,6 +197,13 @@ export async function runAccountCheck(
   usernames: string[],
   wants: AccountCheckWants,
 ): Promise<void> {
+  return runInLane("account", () => accountRun(usernames, wants));
+}
+
+async function accountRun(
+  usernames: string[],
+  wants: AccountCheckWants,
+): Promise<void> {
   if (progress.running) return;
   const cleaned = [
     ...new Set(
@@ -221,7 +229,7 @@ export async function runAccountCheck(
   );
 
   try {
-    await pool(cleaned, CONCURRENCY, alive, async (u) => {
+    await pool(cleaned, laneWorkers("account", CONCURRENCY), alive, async (u) => {
       progress.current = u;
       try {
         const r = await inspect(u, wants);

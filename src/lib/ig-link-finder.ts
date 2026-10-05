@@ -17,6 +17,7 @@ import {
   qualifyingLinks,
 } from "./link-signals";
  import { judgeLinks } from "./link-destination";
+import { runInLane } from "./api-lanes";
 
 import {
   saveJson,
@@ -624,6 +625,13 @@ export async function runLinkFinder(
   seeds: string[],
   opts: { checkHighlights?: boolean; maxCandidates?: number; ignoreSeedHistory?: boolean } = {},
 ): Promise<void> {
+  return runInLane("finder", () => finderRun(seeds, opts));
+}
+
+async function finderRun(
+  seeds: string[],
+  opts: { checkHighlights?: boolean; maxCandidates?: number; ignoreSeedHistory?: boolean } = {},
+): Promise<void> {
   if (progress.running) return;
 
   const checkHighlights = opts.checkHighlights !== false;
@@ -860,6 +868,10 @@ export async function getResumableRun(): Promise<ResumableRun | null> {
  * results so the screen and the download are whole, not just the tail.
  */
 export async function resumeLinkFinder(): Promise<boolean> {
+  return runInLane("finder", finderResume);
+}
+
+async function finderResume(): Promise<boolean> {
   if (progress.running) return false;
 
   const saved = await loadJson<SavedWork>(WORK_FILE);

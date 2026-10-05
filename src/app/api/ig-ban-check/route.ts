@@ -6,7 +6,8 @@ import {
   getResumableBanCheck,
   resumeIgBanCheck,
 } from "@/lib/ig-ban-check";
-import { getApiRateUsage } from "@/lib/rate-limit";
+import { getApiRateUsage, getLaneRateUsage } from "@/lib/rate-limit";
+import { laneStatus } from "@/lib/api-lanes";
 
 export const dynamic = "force-dynamic";
 
@@ -51,6 +52,8 @@ export async function GET() {
       ...getIgBanCheckProgress(),
       resumable: await getResumableBanCheck(),
       rate: getApiRateUsage(),
+      // A trickle has to be visible, or it reads as a freeze.
+      lane: { ...getLaneRateUsage("ban"), ...laneStatus("ban") },
     },
     { headers: { "Cache-Control": "no-store, max-age=0" } },
   );

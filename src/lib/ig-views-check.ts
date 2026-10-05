@@ -12,6 +12,7 @@ import {
   type BucketCounts,
   type ViewBucket,
 } from "./view-buckets";
+import { runInLane, laneWorkers } from "./api-lanes";
 
 import {
   saveJson,
@@ -473,6 +474,10 @@ async function pool<T>(
 }
 
 export async function runIgViewsCheck(usernames: string[]): Promise<void> {
+  return runInLane("views", () => viewsRun(usernames));
+}
+
+async function viewsRun(usernames: string[]): Promise<void> {
   if (progress.running) return;
 
   const cleaned = [
@@ -527,7 +532,7 @@ async function gradeBatch(
     const jobs: Job[] = cleaned.map((username) => ({ username }));
 
     const parked: Job[] = [];
-    await pool(jobs, CONCURRENCY, isActive, async (job) => {
+    await pool(jobs, laneWorkers("views", CONCURRENCY), isActive, async (job) => {
       progress.current = job.username;
       const result = await withDeadline(triage(job, isActive), TRIAGE_DEADLINE, () => {
         console.error(`[ig-views-check] @${job.username} exceeded ${TRIAGE_DEADLINE / 1000}s — abandoned`);
@@ -551,7 +556,7 @@ async function gradeBatch(
       console.log(
         `[ig-views-check] Pass 2: confirming  accounts,  at a time`,
       );
-      await pool(parked, CONFIRM_CONCURRENCY, isActive, async (job) => {
+      await pool(parked, laneWorkers("views", CONFIRM_CONCURRENCY), isActive, async (job) => {
         progress.current = job.username;
         const result = await withDeadline(confirm(job, isActive), CONFIRM_DEADLINE, () => {
           console.error(`[ig-views-check] @${job.username} exceeded ${CONFIRM_DEADLINE / 1000}s — abandoned`);
@@ -606,6 +611,10 @@ export async function getResumableViewsCheck(): Promise<ResumableViewsCheck | nu
  * verdict, and the first pass is what produces one.
  */
 export async function resumeIgViewsCheck(): Promise<boolean> {
+  return runInLane("views", viewsResume);
+}
+
+async function viewsResume(): Promise<boolean> {
   if (progress.running) return false;
 
   const saved = await loadJson<SavedViewsWork>(WORK_FILE);

@@ -6,6 +6,7 @@ import {
   removeFiles,
   ResultLog,
 } from "./run-state";
+import { runInLane, laneWorkers } from "./api-lanes";
 
 /** So a restart cannot take the list of accounts still to check with it. */
 const WORK_FILE = "ban-check-work.json";
@@ -146,6 +147,10 @@ export function stopIgBanCheck(): void {
 }
 
 export async function runIgBanCheck(usernames: string[]): Promise<void> {
+  return runInLane("ban", () => banRun(usernames));
+}
+
+async function banRun(usernames: string[]): Promise<void> {
   if (progress.running) return;
 
   const cleaned = [
@@ -193,7 +198,7 @@ async function runBatch(cleaned: string[]): Promise<void> {
     // when the sequential version was measured correct.
     let next = 0;
     await Promise.all(
-      Array.from({ length: Math.min(CONCURRENCY, cleaned.length) }, async () => {
+      Array.from({ length: Math.min(laneWorkers("ban", CONCURRENCY), cleaned.length) }, async () => {
         for (;;) {
           if (!progress.running) return;
           const i = next++;
@@ -245,6 +250,10 @@ export async function getResumableBanCheck(): Promise<ResumableBanCheck | null> 
 
 /** Continue where a restart cut the list off, without re-checking anyone. */
 export async function resumeIgBanCheck(): Promise<boolean> {
+  return runInLane("ban", banResume);
+}
+
+async function banResume(): Promise<boolean> {
   if (progress.running) return false;
 
   const saved = await loadJson<SavedBanWork>(WORK_FILE);

@@ -62,6 +62,11 @@ interface CheckProgress {
   /** Set while idle when a restart left an unfinished list on disk. */
   resumable: { total: number; done: number; remaining: number } | null;
   rate: { used: number; limit: number };
+  /**
+   * Set when another tool owns the API budget and this one is on a share of
+   * it. Shown on screen, because a trickle nobody explained reads as a freeze.
+   */
+  lane?: { used: number; ceiling: number | null; heldBy: string | null };
 }
 
 type FilterMode = "all" | ViewBucket;
@@ -381,6 +386,20 @@ export function IgViewsCheckerPage() {
             <Play className="mr-1.5 size-4" />
             Resume {progress.resumable.remaining.toLocaleString("en-US")} remaining
           </Button>
+        </div>
+      )}
+
+      {progress?.lane?.ceiling != null && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
+          <p className="font-medium text-amber-400">
+            Sharing the API budget — {progress.lane.ceiling} calls a minute
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">
+            The Link Finder is running and owns the budget, so this check is
+            held to a trickle rather than pushing the plan over its limit and
+            getting answers neither of them can trust. It speeds back up on its
+            own once the finder is done. Started now, it will be slow.
+          </p>
         </div>
       )}
 

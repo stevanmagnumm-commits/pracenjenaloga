@@ -4,7 +4,8 @@ import {
   getAccountCheckProgress,
   stopAccountCheck,
 } from "@/lib/ig-account-check";
-import { getApiRateUsage } from "@/lib/rate-limit";
+import { getApiRateUsage, getLaneRateUsage } from "@/lib/rate-limit";
+import { laneStatus } from "@/lib/api-lanes";
 
 export const dynamic = "force-dynamic";
 
@@ -58,6 +59,8 @@ export async function GET(request: NextRequest) {
       results: wantResults ? results : [],
       resultCount: results.length,
       rate: getApiRateUsage(),
+      // A trickle has to be visible, or it reads as a freeze.
+      lane: { ...getLaneRateUsage("account"), ...laneStatus("account") },
     },
     { headers: { "Cache-Control": "no-store, max-age=0" } },
   );

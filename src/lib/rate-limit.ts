@@ -21,6 +21,8 @@
  * trying not to exceed.
  */
 
+import { currentLane, laneCeiling, type Lane } from "./api-lanes";
+
 const DEFAULT_LIMIT = 280;
 
 let limit = Math.max(1, Number(process.env.IG_API_RATE_PER_MIN) || DEFAULT_LIMIT);
@@ -44,8 +46,8 @@ function trim(now: number): void {
 /** Issue time of the most recent call, for the even-spacing rule below. */
 let lastIssue = 0;
 
-/** Blocks until this call is within budget, then records it. */
-export function acquireApiSlot(): Promise<void> {
+/** Blocks until this call is within the app ceiling, then records it. */
+function globalSlot(): Promise<void> {
   const mine = gate.then(async () => {
     for (;;) {
       const now = Date.now();
@@ -78,10 +80,72 @@ export function acquireApiSlot(): Promise<void> {
   return mine;
 }
 
+/**
+ * A single lane's own smaller window, with its own gate so the lane's workers
+ * cannot burst past their share between each other.
+ */
+const laneWindow = new Map<Lane, number[]>();
+const laneLast = new Map<Lane, number>();
+const laneGate = new Map<Lane, Promise<void>>();
+
+function laneSlot(lane: Lane, perMin: number): Promise<void> {
+  const mine = (laneGate.get(lane) ?? Promise.resolve()).then(async () => {
+    let w = laneWindow.get(lane);
+    if (!w) {
+      w = [];
+      laneWindow.set(lane, w);
+    }
+    for (;;) {
+      const now = Date.now();
+      while (w.length && now - w[0] >= WINDOW_MS) w.shift();
+
+      if (w.length >= perMin) {
+        await new Promise((r) => setTimeout(r, WINDOW_MS - (now - w[0]) + 5));
+        continue;
+      }
+      const wait = (laneLast.get(lane) ?? 0) + WINDOW_MS / perMin - now;
+      if (wait > 0) {
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+      laneLast.set(lane, now);
+      w.push(now);
+      return;
+    }
+  });
+  laneGate.set(lane, mine.catch(() => {}));
+  return mine;
+}
+
+/**
+ * Blocks until this call is within both the app ceiling and, when another tool
+ * owns the budget, this lane's share of it.
+ *
+ * The lane wait happens BEFORE the app gate, and that order is the whole
+ * design. Inside it, a views call waiting six seconds for its share would hold
+ * the one gate every call passes through, and the link finder — the tool whose
+ * budget we are protecting — would be throttled to the same trickle. Which is
+ * the opposite of the point.
+ */
+export function acquireApiSlot(): Promise<void> {
+  const lane = currentLane();
+  const ceiling = laneCeiling(lane);
+  if (ceiling === null) return globalSlot();
+  return laneSlot(lane, ceiling).then(globalSlot);
+}
+
 /** Calls issued in the last minute, and the ceiling. For the UI and for tests. */
 export function getApiRateUsage(): { used: number; limit: number } {
   trim(Date.now());
   return { used: window.length, limit };
+}
+
+/** Calls a single lane has issued in the last minute, for the screen. */
+export function getLaneRateUsage(lane: Lane): { used: number; ceiling: number | null } {
+  const w = laneWindow.get(lane) ?? [];
+  const now = Date.now();
+  while (w.length && now - w[0] >= WINDOW_MS) w.shift();
+  return { used: w.length, ceiling: laneCeiling(lane) };
 }
 
 /** Test seam only — production sets the limit from the environment at import. */
@@ -90,4 +154,7 @@ export function __setApiRateLimitForTest(next: number): void {
   window = [];
   lastIssue = 0;
   gate = Promise.resolve();
+  laneWindow.clear();
+  laneLast.clear();
+  laneGate.clear();
 }

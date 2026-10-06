@@ -46,6 +46,23 @@ function trackApiCall() {
 
 // On 429 (burst rate limit) we back off and retry several times — RapidAPI's
 // per-second cap clears in a couple of seconds, so a short wait usually wins.
+/**
+ * A provider failure dressed up as an absence.
+ *
+ * Measured text, straight off the wire:
+ *   "Profile data not found. Received 429 Too Many Requests."
+ *
+ * The words "not found" are in it, yet nothing was ever looked up. Five tools
+ * decide "banned or deleted" by looking for that wording in the thrown message,
+ * so this sentence has to be kept away from it: on one 83-account run it
+ * produced 70 confirmed bans, and 19 of 20 of those accounts answered normally
+ * seconds later with 180-270 posts each.
+ *
+ * A real absence arrives as "data not found" on its own, or alongside 404.
+ */
+const NOT_A_VERDICT =
+  /rate.?limit|too many requests|received\s+(?!404)\d{3}|timed?\s*out|try again|temporarily|unavailable|bad gateway|gateway time/i;
+
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 const RETRYABLE_BACKOFF_MS = [2_000, 5_000, 10_000, 20_000, 40_000];
 
@@ -156,9 +173,30 @@ async function readJsonBody(response: Response): Promise<JsonOutcome> {
     if (typeof message === "string" && /rate limit|exceeded|quota/i.test(message)) {
       return { ok: false, reason: message.slice(0, 120) };
     }
+
+    // Shape 3 - the same transient refusal, worded as an absence in `error`
+    // rather than as a cap in `message`:
+    //   {"error":"Profile data not found. Received 429 Too Many Requests."}
+    // Neither shape above matched it, so it was never retried: the first
+    // refusal ended the account. One bad window at the provider turned a whole
+    // run into failures - 322 of them - and the same accounts answered
+    // normally twenty minutes later, one at a time and forty at a time alike.
+    const errField = (data as Record<string, unknown>).error;
+    if (isTransientErrorField(errField)) {
+      return { ok: false, reason: String(errField).slice(0, 120) };
+    }
   }
 
   return { ok: true, data };
+}
+
+/**
+ * Whether the provider's `error` sentence describes a failure to look rather
+ * than something looked for and missing. Exported because this one line
+ * decides between "try again" and "write this account off".
+ */
+export function isTransientErrorField(error: unknown): boolean {
+  return typeof error === "string" && NOT_A_VERDICT.test(error);
 }
 
 async function fetchWithDeadline(url: string, init: RequestInit): Promise<FetchOutcome> {
@@ -206,7 +244,7 @@ async function apiPost(endpoint: string, body: Record<string, string>, retries =
         if (attempt < retries) {
           // A per-minute cap needs a real pause, not the 2s a hiccup gets, so
           // it backs off on the 429 ladder rather than the transient one.
-          const overCap = /rate limit|exceeded|quota/i.test(parsed.reason);
+          const overCap = /rate limit|exceeded|quota|too many requests/i.test(parsed.reason);
           await retryWait(overCap ? 429 : TIMEOUT_STATUS, attempt, endpoint, null);
           continue;
         }
@@ -252,7 +290,7 @@ async function apiGet(endpoint: string, retries = 5): Promise<unknown> {
         if (attempt < retries) {
           // A per-minute cap needs a real pause, not the 2s a hiccup gets, so
           // it backs off on the 429 ladder rather than the transient one.
-          const overCap = /rate limit|exceeded|quota/i.test(parsed.reason);
+          const overCap = /rate limit|exceeded|quota|too many requests/i.test(parsed.reason);
           await retryWait(overCap ? 429 : TIMEOUT_STATUS, attempt, endpoint, null);
           continue;
         }
@@ -425,22 +463,6 @@ export function dateFromMediaPk(pk: string): Date | null {
   return null;
 }
 
-/**
- * A provider failure dressed up as an absence.
- *
- * Measured text, straight off the wire:
- *   "Profile data not found. Received 429 Too Many Requests."
- *
- * The words "not found" are in it, yet nothing was ever looked up. Five tools
- * decide "banned or deleted" by looking for that wording in the thrown message,
- * so this sentence has to be kept away from it: on one 83-account run it
- * produced 70 confirmed bans, and 19 of 20 of those accounts answered normally
- * seconds later with 180-270 posts each.
- *
- * A real absence arrives as "data not found" on its own, or alongside 404.
- */
-const NOT_A_VERDICT =
-  /rate.?limit|too many requests|received\s+(?!404)\d{3}|timed?\s*out|try again|temporarily|unavailable|bad gateway|gateway time/i;
 
 /**
  * The error to throw for a provider `error` sentence. The WORDING is the

@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
 
   const { usernames, wants } = (await request.json()) as {
     usernames?: string[];
-    wants?: { highlights?: boolean; posts?: boolean; lastPost?: boolean };
+    wants?: { highlights?: boolean; posts?: boolean; lastPost?: boolean; story?: boolean };
   };
 
   if (!usernames?.length) {
@@ -31,8 +31,9 @@ export async function POST(request: NextRequest) {
     highlights: !!wants?.highlights,
     posts: !!wants?.posts,
     lastPost: !!wants?.lastPost,
+    story: !!wants?.story,
   };
-  if (!w.highlights && !w.posts && !w.lastPost) {
+  if (!w.highlights && !w.posts && !w.lastPost && !w.story) {
     return NextResponse.json(
       { error: "Tick at least one thing to check" },
       { status: 400 },

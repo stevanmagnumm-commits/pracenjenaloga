@@ -16,6 +16,7 @@ import {
   ArrowUp,
   ArrowDown,
   ArrowUpDown,
+  Radio,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useRowSelection, openInstagramTabs } from "@/lib/use-row-selection";
@@ -35,6 +36,9 @@ interface CheckResult {
   highlightTitles: string[];
   postCount: number | null;
   lastPostAt: string | null;
+  storyCount: number | null;
+  storyLastAt: string | null;
+  storyExpiresAt: string | null;
   status: "ok" | "gone" | "private" | "failed";
   note?: string;
 }
@@ -44,7 +48,7 @@ interface CheckProgress {
   completed: number;
   current: string | null;
   running: boolean;
-  wants: { highlights: boolean; posts: boolean; lastPost: boolean };
+  wants: { highlights: boolean; posts: boolean; lastPost: boolean; story: boolean };
   startedAt: number | null;
   finishedAt: number | null;
   abortedReason: string | null;
@@ -53,7 +57,7 @@ interface CheckProgress {
   results: CheckResult[];
 }
 
-type FilterMode = "all" | "withHl" | "noHl" | "problem";
+type FilterMode = "all" | "withHl" | "noHl" | "withStory" | "noStory" | "problem";
 
 /** h:mm:ss while it is being watched, mm:ss under an hour. */
 function fmtClock(ms: number): string {
@@ -72,6 +76,10 @@ function fmtLeft(ms: number): string {
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
 }
 
+function hoursAgo(iso: string): number {
+  return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 3_600_000));
+}
+
 function daysAgo(iso: string): number {
   return Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
 }
@@ -81,6 +89,7 @@ export function IgAccountCheckPage() {
   const [wantHl, setWantHl] = useState(true);
   const [wantPosts, setWantPosts] = useState(false);
   const [wantLast, setWantLast] = useState(false);
+  const [wantStory, setWantStory] = useState(false);
   const [progress, setProgress] = useState<CheckProgress | null>(null);
   const [rows, setRows] = useState<CheckResult[]>([]);
   const [filter, setFilter] = useState<FilterMode>("all");
@@ -144,7 +153,7 @@ export function IgAccountCheckPage() {
   async function handleStart() {
     const list = usernames();
     if (!list.length) return;
-    if (!wantHl && !wantPosts && !wantLast) return;
+    if (!wantHl && !wantPosts && !wantLast && !wantStory) return;
     setFilter("all");
     setShown(300);
     clear();
@@ -153,7 +162,7 @@ export function IgAccountCheckPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         usernames: list,
-        wants: { highlights: wantHl, posts: wantPosts, lastPost: wantLast },
+        wants: { highlights: wantHl, posts: wantPosts, lastPost: wantLast, story: wantStory },
       }),
     });
     if (res.ok) {
@@ -179,6 +188,8 @@ export function IgAccountCheckPage() {
   const filtered = rows.filter((r) => {
     if (filter === "withHl") return (r.highlightCount ?? 0) > 0;
     if (filter === "noHl") return r.highlightCount === 0;
+    if (filter === "withStory") return (r.storyCount ?? 0) > 0;
+    if (filter === "noStory") return r.storyCount === 0;
     if (filter === "problem") return r.status !== "ok";
     return true;
   });
@@ -211,6 +222,8 @@ export function IgAccountCheckPage() {
 
   const withHl = rows.filter((r) => (r.highlightCount ?? 0) > 0);
   const noHl = rows.filter((r) => r.highlightCount === 0);
+  const withStory = rows.filter((r) => (r.storyCount ?? 0) > 0);
+  const noStory = rows.filter((r) => r.storyCount === 0);
   const problems = rows.filter((r) => r.status !== "ok");
 
   const pct = progress?.total
@@ -224,8 +237,11 @@ export function IgAccountCheckPage() {
       ? ((now - startedAt) / progress.completed) * (progress.total - progress.completed)
       : null;
 
-  const nothingTicked = !wantHl && !wantPosts && !wantLast;
-  const perAccount = (wantHl ? 1 : 0) + (wantPosts ? 1 : 0) + (wantLast ? 1 : 0);
+  const nothingTicked = !wantHl && !wantPosts && !wantLast && !wantStory;
+  // A story that is up costs one call; an empty answer is confirmed once, so
+  // accounts with nothing up cost two. This shows the cheaper figure.
+  const perAccount =
+    (wantHl ? 1 : 0) + (wantPosts ? 1 : 0) + (wantLast ? 1 : 0) + (wantStory ? 1 : 0);
   const pending = usernames().length;
 
   return (
@@ -268,6 +284,17 @@ export function IgAccountCheckPage() {
           />
           <FileStack className="size-4 text-muted-foreground" />
           Total posts
+        </label>
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input
+            type="checkbox"
+            checked={wantStory}
+            onChange={(e) => setWantStory(e.target.checked)}
+            disabled={progress?.running}
+            className="size-4 rounded border-border accent-primary cursor-pointer"
+          />
+          <Radio className="size-4 text-muted-foreground" />
+          Live story
         </label>
         <label className="flex items-center gap-2 text-sm cursor-pointer">
           <input
@@ -381,6 +408,12 @@ export function IgAccountCheckPage() {
                 ["all", "Checked", rows.length],
                 ["withHl", "Has highlights", withHl.length],
                 ["noHl", "No highlights", noHl.length],
+                ...(progress?.wants.story
+                  ? ([
+                      ["withStory", "Story up now", withStory.length],
+                      ["noStory", "No story", noStory.length],
+                    ] as [FilterMode, string, number][])
+                  : []),
                 ["problem", "Gone / private / failed", problems.length],
               ] as [FilterMode, string, number][]
             ).map(([key, label, n]) => (
@@ -477,6 +510,9 @@ export function IgAccountCheckPage() {
                   <TableHead>Username</TableHead>
                   {progress?.wants.highlights && <TableHead className="w-28">Highlights</TableHead>}
                   {progress?.wants.posts && <TableHead className="w-24">Posts</TableHead>}
+                  {progress?.wants.story && (
+                    <TableHead className="w-36">Live story</TableHead>
+                  )}
                   {progress?.wants.lastPost && (
                     <TableHead className="w-40">
                       <button
@@ -553,6 +589,26 @@ export function IgAccountCheckPage() {
                           <span className="text-xs text-muted-foreground">—</span>
                         ) : (
                           r.postCount.toLocaleString("en-US")
+                        )}
+                      </TableCell>
+                    )}
+                    {progress?.wants.story && (
+                      <TableCell className="text-sm">
+                        {r.storyCount === null ? (
+                          <span className="text-muted-foreground">—</span>
+                        ) : r.storyCount === 0 ? (
+                          <span className="text-muted-foreground">none</span>
+                        ) : (
+                          <>
+                            <span className="text-emerald-400 font-medium">
+                              {r.storyCount} up
+                            </span>
+                            {r.storyLastAt && (
+                              <span className="text-xs text-muted-foreground block">
+                                {hoursAgo(r.storyLastAt)}h ago
+                              </span>
+                            )}
+                          </>
                         )}
                       </TableCell>
                     )}

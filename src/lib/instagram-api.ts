@@ -1001,6 +1001,59 @@ export async function fetchHighlightLinks(highlightId: string): Promise<string[]
  * old. The first entry on the account this was written against was pinned and
  * three weeks behind the real latest.
  */
+export interface ActiveStories {
+  count: number;
+  /** Newest story posted, or null when there are none up. */
+  lastAt: Date | null;
+  /** When the last one drops off, or null when there are none up. */
+  expiresAt: Date | null;
+}
+
+/**
+ * What the account has up right now - the 24h stories, not highlights.
+ *
+ * get_ig_user_stories.php answers with a BARE ARRAY of story objects, the way
+ * get_ig_similar_accounts.php does, not an object with a key. Measured live:
+ *   has stories  -> array of items, 18,753 bytes on the account checked
+ *   nothing up   -> [] , two bytes, still HTTP 200
+ *   no such user -> {"error":"Invalid or missing username or user does not
+ *                    exist on Instagram"}
+ *
+ * The provider's own snippet posts multipart/form-data, but urlencoded returns
+ * the identical answer (same byte count, checked both ways), so this goes
+ * through apiPost like everything else and inherits its retries.
+ *
+ * Each item carries taken_at and expiring_at, exactly 86,400s apart.
+ */
+export async function fetchActiveStories(username: string): Promise<ActiveStories> {
+  const data = await apiPost("/get_ig_user_stories.php", {
+    username_or_url: username,
+  });
+
+  // The absence answer is an object, not an array. Routed through the same
+  // wording rules as a profile lookup so "does not exist" means gone while a
+  // refusal stays a refusal.
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const err = (data as Record<string, unknown>).error;
+    if (typeof err === "string") throw profileErrorFor(username, err);
+  }
+
+  const items = Array.isArray(data) ? (data as Array<Record<string, unknown>>) : [];
+  let newest = 0;
+  let latestExpiry = 0;
+  for (const item of items) {
+    const t = item.taken_at;
+    const e = item.expiring_at;
+    if (typeof t === "number" && t > newest) newest = t;
+    if (typeof e === "number" && e > latestExpiry) latestExpiry = e;
+  }
+  return {
+    count: items.length,
+    lastAt: newest ? new Date(newest * 1000) : null,
+    expiresAt: latestExpiry ? new Date(latestExpiry * 1000) : null,
+  };
+}
+
 export async function fetchLastPostAt(username: string): Promise<Date | null> {
   const data = (await apiPost("/get_ig_user_posts.php", {
     username_or_url: username,

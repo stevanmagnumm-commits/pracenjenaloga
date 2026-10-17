@@ -2,6 +2,7 @@ import {
   fetchProfileRaw,
   fetchHighlights,
   fetchLastPostAt,
+  fetchActiveStories,
   isQuotaExhausted,
 } from "./instagram-api";
 import { runInLane, laneWorkers } from "./api-lanes";
@@ -22,6 +23,8 @@ export interface AccountCheckWants {
   highlights: boolean;
   posts: boolean;
   lastPost: boolean;
+  /** Stories up right now - the 24h ones, not highlights. */
+  story: boolean;
 }
 
 export interface AccountCheckResult {
@@ -31,6 +34,10 @@ export interface AccountCheckResult {
   highlightTitles: string[];
   postCount: number | null;
   lastPostAt: string | null;
+  /** null when not asked for, or when the stories could not be read. */
+  storyCount: number | null;
+  storyLastAt: string | null;
+  storyExpiresAt: string | null;
   status: "ok" | "gone" | "private" | "failed";
   note?: string;
 }
@@ -60,6 +67,22 @@ const CONCURRENCY = Math.max(1, Number(process.env.IG_ACCOUNT_CONCURRENCY) || 40
  * highlights breaks out on its first non-empty answer, usually the first call.
  */
 const ZERO_CONFIRMATIONS = Math.max(1, Number(process.env.IG_HL_ZERO_TRIES) || 5);
+
+/**
+ * How many times an empty story list is asked for before it is believed.
+ *
+ * Two, where the highlight check uses five, and the difference is the base
+ * rate. Most accounts genuinely have nothing up at any given moment, so a long
+ * ladder would be paid on nearly every row: five tries over 2,000 accounts is
+ * 10,000 calls to answer a question whose honest answer is usually "no".
+ *
+ * One confirmation still matters, because this provider hands back an empty
+ * list for accounts that answer normally seconds later - that is exactly how
+ * 239 live accounts were once filed as having no reels. The cost is one extra
+ * call, and only for the accounts that came back empty.
+ */
+const STORY_ZERO_TRIES = Math.max(1, Number(process.env.IG_STORY_ZERO_TRIES) || 2);
+const STORY_ZERO_DELAY = Number(process.env.IG_STORY_ZERO_DELAY ?? 1500);
 const ZERO_RETRY_DELAY = Number(process.env.IG_HL_ZERO_DELAY ?? 1200);
 
 function fresh(
@@ -82,7 +105,7 @@ function fresh(
 
 let progress: AccountCheckProgress = fresh(
   0,
-  { highlights: true, posts: false, lastPost: false },
+  { highlights: true, posts: false, lastPost: false, story: false },
   false,
 );
 let runToken = 0;
@@ -111,6 +134,9 @@ async function inspect(
     highlightTitles: [],
     postCount: null,
     lastPostAt: null,
+    storyCount: null,
+    storyLastAt: null,
+    storyExpiresAt: null,
     status: "ok",
   };
 
@@ -161,6 +187,35 @@ async function inspect(
     } else {
       // "could not look" is not "there are none" — the count stays null.
       out.note = "highlights unreadable: " + lastErr.slice(0, 80);
+    }
+  }
+
+  if (wants.story) {
+    // An empty answer is confirmed; a non-empty one is believed at once, so an
+    // account that has something up costs a single call.
+    let seen: Awaited<ReturnType<typeof fetchActiveStories>> | null = null;
+    let lastErr = "";
+    for (let attempt = 0; attempt < STORY_ZERO_TRIES; attempt++) {
+      if (attempt) await new Promise((r) => setTimeout(r, STORY_ZERO_DELAY));
+      try {
+        seen = await fetchActiveStories(username);
+        if (seen.count > 0) break;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/not found|does not exist|invalid username/i.test(msg)) {
+          return { ...out, status: "gone", note: "profile not found" };
+        }
+        lastErr = msg;
+      }
+    }
+    if (seen) {
+      out.storyCount = seen.count;
+      out.storyLastAt = seen.lastAt ? seen.lastAt.toISOString() : null;
+      out.storyExpiresAt = seen.expiresAt ? seen.expiresAt.toISOString() : null;
+    } else {
+      // "could not look" is not "there are none" - the count stays null.
+      out.note =
+        (out.note ? out.note + "; " : "") + "stories unreadable: " + lastErr.slice(0, 70);
     }
   }
 
@@ -225,7 +280,9 @@ async function accountRun(
       " posts=" +
       wants.posts +
       " lastPost=" +
-      wants.lastPost,
+      wants.lastPost +
+      " story=" +
+      wants.story,
   );
 
   try {
@@ -247,6 +304,9 @@ async function accountRun(
             highlightTitles: [],
             postCount: null,
             lastPostAt: null,
+            storyCount: null,
+            storyLastAt: null,
+            storyExpiresAt: null,
             status: "failed",
             note: (err instanceof Error ? err.message : String(err)).slice(0, 120),
           });

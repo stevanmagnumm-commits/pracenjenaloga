@@ -202,11 +202,18 @@ export function IgAccountCheckPage() {
 
   const visible = sortRows(filtered);
 
+  // MUST be the same list the table body maps, in the same order. Shift-click
+  // sends the row's position on screen, and the hook turns that position back
+  // into a username against whatever list it was given - so handing it a
+  // differently ordered list makes a range select whichever accounts happen to
+  // sit at those positions in the other order. That is what it did: the body
+  // rendered `visible` (sorted) while this was `filtered` (unsorted), and
+  // shift-selecting a block after sorting by last post ticked unrelated rows.
   const { selected, toggle, clear, toggleAll, allSelected } = useRowSelection(
-    filtered.map((r) => r.username),
+    visible.map((r) => r.username),
   );
   const selectedUsernames = () =>
-    filtered.filter((r) => selected.has(r.username)).map((r) => r.username);
+    visible.filter((r) => selected.has(r.username)).map((r) => r.username);
 
   function download(list: CheckResult[], what: string) {
     if (!list.length) return;

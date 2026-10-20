@@ -1030,12 +1030,29 @@ export async function fetchActiveStories(username: string): Promise<ActiveStorie
     username_or_url: username,
   });
 
-  // The absence answer is an object, not an array. Routed through the same
-  // wording rules as a profile lookup so "does not exist" means gone while a
-  // refusal stays a refusal.
+  // The answer for "nothing up" is an object, not an empty array, and the
+  // provider spells out both readings in one sentence:
+  //   "stories data not found or user has no active stories."
+  // The second half is the answer we asked for. Reading the whole sentence as
+  // an absence of the ACCOUNT marked 669 live accounts as gone on one run -
+  // sampled twelve of them and all twelve answered with 8 to 1,439 posts, two
+  // of them with stories actually up.
+  //
+  // A missing account says something else entirely, and only that is gone:
+  //   "Invalid or missing username or user does not exist on Instagram"
   if (data && typeof data === "object" && !Array.isArray(data)) {
     const err = (data as Record<string, unknown>).error;
-    if (typeof err === "string") throw profileErrorFor(username, err);
+    if (typeof err === "string") {
+      if (/does not exist|invalid or missing username/i.test(err)) {
+        throw profileErrorFor(username, err);
+      }
+      if (/no active stories|stories data not found/i.test(err)) {
+        // Treated as an empty answer rather than a fact: the caller asks again
+        // before believing it, the same way it does for a literal [].
+        return { count: 0, lastAt: null, expiresAt: null };
+      }
+      throw profileErrorFor(username, err);
+    }
   }
 
   const items = Array.isArray(data) ? (data as Array<Record<string, unknown>>) : [];

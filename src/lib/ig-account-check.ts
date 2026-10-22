@@ -71,18 +71,26 @@ const ZERO_CONFIRMATIONS = Math.max(1, Number(process.env.IG_HL_ZERO_TRIES) || 5
 /**
  * How many times an empty story list is asked for before it is believed.
  *
- * Two, where the highlight check uses five, and the difference is the base
- * rate. Most accounts genuinely have nothing up at any given moment, so a long
- * ladder would be paid on nearly every row: five tries over 2,000 accounts is
- * 10,000 calls to answer a question whose honest answer is usually "no".
+ * Four, at three seconds apart, and both numbers come from measurement rather
+ * than from what felt reasonable.
  *
- * One confirmation still matters, because this provider hands back an empty
- * list for accounts that answer normally seconds later - that is exactly how
- * 239 live accounts were once filed as having no reels. The cost is one extra
- * call, and only for the accounts that came back empty.
+ * This endpoint returns an empty array for accounts that plainly have stories,
+ * and it does it erratically rather than once: probed three times each, three
+ * seconds apart, accounts answered 0,1,0 and 1,0,0 and 0,0,1. Twenty accounts
+ * a run had filed as having nothing up were re-probed this way and twelve of
+ * them had stories - sixty percent wrong. Of those twelve, eight showed on the
+ * first call, two more on the second, and the last two only on the third.
+ *
+ * The first version asked twice, 1.5s apart, which is why those twelve were
+ * missed. Four tries at three seconds covers everything the sample showed and
+ * leaves a margin, because the empty answers get worse under load - the same
+ * pressure that makes this provider answer "data not found" for live accounts.
+ *
+ * An account that HAS a story breaks out on its first non-empty answer, so it
+ * still costs one call. Only the genuinely empty ones pay the full four.
  */
-const STORY_ZERO_TRIES = Math.max(1, Number(process.env.IG_STORY_ZERO_TRIES) || 2);
-const STORY_ZERO_DELAY = Number(process.env.IG_STORY_ZERO_DELAY ?? 1500);
+const STORY_ZERO_TRIES = Math.max(1, Number(process.env.IG_STORY_ZERO_TRIES) || 4);
+const STORY_ZERO_DELAY = Number(process.env.IG_STORY_ZERO_DELAY ?? 3000);
 const ZERO_RETRY_DELAY = Number(process.env.IG_HL_ZERO_DELAY ?? 1200);
 
 function fresh(

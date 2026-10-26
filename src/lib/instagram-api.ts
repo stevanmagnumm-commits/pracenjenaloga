@@ -195,6 +195,32 @@ async function readJsonBody(response: Response): Promise<JsonOutcome> {
  * than something looked for and missing. Exported because this one line
  * decides between "try again" and "write this account off".
  */
+/**
+ * The provider's own sentence, made safe to quote inside a failure message.
+ *
+ * Four tools decide "banned or deleted" by looking for "data not found" in a
+ * thrown message. profileErrorFor already keeps a refusal away from that
+ * wording - but the retry-exhausted path below quoted the provider verbatim,
+ * so the phrase came straight back in:
+ *
+ *   API error body on /ig_get_fb_profile_v3.php:
+ *     Profile data not found. Received 429 Too Many Requests.
+ *
+ * Everything reaching that throw is a transient failure by definition, since
+ * readJsonBody only flags it when the body is a refusal. Caught live: the
+ * profile endpoint answered 0 of 12 calls while a ban run was writing 126
+ * accounts off as banned, five of five of which answered on another endpoint.
+ */
+function withoutAbsenceWording(text: string): string {
+  const safe = text
+    .replace(/\b(profile\s+|stories\s+)?data not found\.?/gi, "")
+    .replace(/\bnot found\b/gi, "refused")
+    .replace(/\bdoes not exist\b/gi, "was refused")
+    .replace(/\s+/g, " ")
+    .trim();
+  return safe || "provider refused the lookup";
+}
+
 export function isTransientErrorField(error: unknown): boolean {
   return typeof error === "string" && NOT_A_VERDICT.test(error);
 }
@@ -248,7 +274,7 @@ async function apiPost(endpoint: string, body: Record<string, string>, retries =
           await retryWait(overCap ? 429 : TIMEOUT_STATUS, attempt, endpoint, null);
           continue;
         }
-        throw new Error(`API error body on ${endpoint}: ${parsed.reason}`);
+        throw new Error(`API gave up on ${endpoint}: ${withoutAbsenceWording(parsed.reason)}`);
       }
       return parsed.data;
     }
@@ -260,7 +286,7 @@ async function apiPost(endpoint: string, body: Record<string, string>, retries =
       await retryWait(response.status, attempt, endpoint, response.headers.get("retry-after"));
       continue;
     }
-    throw new Error(`API error ${response.status}: ${text}`);
+    throw new Error(`API error ${response.status}: ${withoutAbsenceWording(text)}`);
   }
   throw new Error("Unreachable");
 }
@@ -294,7 +320,7 @@ async function apiGet(endpoint: string, retries = 5): Promise<unknown> {
           await retryWait(overCap ? 429 : TIMEOUT_STATUS, attempt, endpoint, null);
           continue;
         }
-        throw new Error(`API error body on ${endpoint}: ${parsed.reason}`);
+        throw new Error(`API gave up on ${endpoint}: ${withoutAbsenceWording(parsed.reason)}`);
       }
       return parsed.data;
     }
@@ -306,7 +332,7 @@ async function apiGet(endpoint: string, retries = 5): Promise<unknown> {
       await retryWait(response.status, attempt, endpoint, response.headers.get("retry-after"));
       continue;
     }
-    throw new Error(`API error ${response.status}: ${text}`);
+    throw new Error(`API error ${response.status}: ${withoutAbsenceWording(text)}`);
   }
   throw new Error("Unreachable");
 }

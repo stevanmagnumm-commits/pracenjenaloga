@@ -673,6 +673,77 @@ export async function fetchLatestStubs(username: string, maxStubs = 36): Promise
   return fetchAllStubs(username, maxStubs);
 }
 
+/**
+ * Liveness read off the reels endpoint, for when the profile endpoint refuses.
+ *
+ * This provider has exactly two profile endpoints - ig_get_fb_profile_v3.php
+ * and ig_get_fb_profile.php; the other spellings tried all answer
+ * {"message":"Endpoint ... does not exist"} - and on 2026-11-05 both returned
+ * 429 to every single call for over an hour, @instagram included, while
+ * get_ig_user_reels.php and get_ig_user_posts.php answered normally the whole
+ * time. Our own rate then was 76/min against a 280 ceiling and the monthly
+ * quota was half unspent, so neither was the cause.
+ *
+ * That mattered because the views check asked the profile FIRST and treated
+ * the answer as a gate, so a run came out 52 "failed" out of 78 on a question
+ * - what do this account's reels average - that the working endpoint could
+ * have answered outright.
+ *
+ * Measured in that same hour, on the reels endpoint:
+ *   live account      -> {"reels":[ 12 items ]}
+ *   no such user      -> {"error":"Invalid or missing username or user does
+ *                         not exist on Instagram"}
+ *   confirmed banned  -> that same sentence, or {"error":"reels data not found"}
+ *
+ * So items present is proof of life, and that one sentence is the only thing
+ * allowed to mean gone. "reels data not found" is NOT allowed to: it reads
+ * both as "this account has no reels" and as a refusal, exactly like the
+ * stories endpoint's "stories data not found" - the sentence that once filed
+ * 669 live accounts as missing. It comes back inconclusive, and so does every
+ * thrown error, because nothing that failed may become a verdict here.
+ */
+export type ReelsLiveness =
+  | { state: "alive"; reels: number }
+  | { state: "missing" }
+  | { state: "inconclusive"; reason: string };
+
+export async function probeReelsLiveness(username: string): Promise<ReelsLiveness> {
+  try {
+    const data = await apiPost("/get_ig_user_reels.php", {
+      username_or_url: username,
+    });
+
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      const row = data as Record<string, unknown>;
+
+      if (Array.isArray(row.reels) && row.reels.length > 0) {
+        return { state: "alive", reels: row.reels.length };
+      }
+
+      const err = typeof row.error === "string" ? row.error : "";
+      if (err) {
+        if (/does not exist|invalid or missing username/i.test(err)) {
+          return { state: "missing" };
+        }
+        return { state: "inconclusive", reason: err };
+      }
+
+      if (Array.isArray(row.reels)) {
+        return { state: "inconclusive", reason: "reels list came back empty" };
+      }
+    }
+
+    return { state: "inconclusive", reason: "unrecognised answer from the reels endpoint" };
+  } catch (err) {
+    // A call that failed says nothing about the account, whatever it says
+    // about the provider.
+    return {
+      state: "inconclusive",
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 async function fetchMediaDetailOnce(shortcode: string): Promise<NormalizedMedia | null> {
   // The mediacrawlers /reels feed already carries view/like/comment counts, so
   // per-media enrichment isn't needed there (and its media-detail endpoint has a

@@ -1,6 +1,7 @@
 import {
   fetchLatestStubs,
   fetchProfile,
+  probeReelsLiveness,
   isQuotaExhausted,
   dateFromMediaPk,
 } from "./instagram-api";
@@ -255,8 +256,8 @@ async function withDeadline<T>(
 }
 
 type ProfileState =
-  | { state: "alive"; mediaCount: number }
-  | { state: "missing" }
+  | { state: "alive"; mediaCount: number | null; via?: "reels" }
+  | { state: "missing"; via?: "reels" }
   | { state: "inconclusive"; reason: string };
 
 /**
@@ -276,8 +277,40 @@ async function probeProfile(username: string): Promise<ProfileState> {
     if (msg.includes("Profile not found") || msg.includes("data not found")) {
       return { state: "missing" };
     }
+
+    // The profile endpoint refused. It is not the only endpoint that can
+    // answer this question, and on 2026-11-05 it was the only one that was
+    // down - so ask the one that is still up rather than abandoning an
+    // account whose reels are sitting right there. See probeReelsLiveness.
+    //
+    // Only its two unambiguous answers are honoured: reels in hand means
+    // alive, and the "user does not exist" sentence means gone. Anything
+    // else leaves the original refusal standing as the reason, because the
+    // account still has not been looked at.
+    const reels = await probeReelsLiveness(username);
+    if (reels.state === "alive") {
+      return { state: "alive", mediaCount: null, via: "reels" };
+    }
+    if (reels.state === "missing") {
+      return { state: "missing", via: "reels" };
+    }
     return { state: "inconclusive", reason: msg };
   }
+}
+
+/**
+ * Mark a row the profile endpoint had no hand in, so a run graded during an
+ * outage can be told apart from a normal one months later, from the export
+ * alone. A number with no provenance is the kind of thing that gets trusted
+ * once the reason for doubting it has been forgotten.
+ */
+const VIA_REELS = "profile endpoint refusing - read from reels";
+
+function markedViaReels(result: ViewsCheckResult): ViewsCheckResult {
+  return {
+    ...result,
+    note: result.note ? `${result.note} (${VIA_REELS})` : VIA_REELS,
+  };
 }
 
 function ungraded(username: string, bucket: ViewBucket, note: string): ViewsCheckResult {
@@ -390,7 +423,8 @@ async function triage(
   try {
     const profile = await probeProfile(username);
     if (profile.state === "alive") {
-      return await gradeAlive(username, profile.mediaCount, isActive);
+      const graded = await gradeAlive(username, profile.mediaCount, isActive);
+      return profile.via === "reels" ? markedViaReels(graded) : graded;
     }
     return null;
   } catch (err) {
@@ -417,6 +451,11 @@ async function confirm(
   isActive: () => boolean,
 ): Promise<ViewsCheckResult> {
   const { username } = job;
+  // Whether any part of this verdict came from the reels endpoint instead of
+  // the profile one. It changes nothing about the decision - the sentence
+  // "user does not exist" is as explicit from one as from the other - but the
+  // row says so, so the verdict can be re-examined later on its own terms.
+  let viaReels = false;
   try {
     for (let probe = 0; probe < BAN_CONFIRMATIONS; probe++) {
       if (probe > 0) {
@@ -428,7 +467,8 @@ async function confirm(
       if (profile.state === "alive") {
         const note = probe === 0 ? "" : " (recovered on recheck)";
         console.log(`[ig-views-check] @${username} -> ALIVE${note}`);
-        return await gradeAlive(username, profile.mediaCount, isActive);
+        const graded = await gradeAlive(username, profile.mediaCount, isActive);
+        return profile.via === "reels" ? markedViaReels(graded) : graded;
       }
       if (profile.state === "inconclusive") {
         console.log(`[ig-views-check] @${username} -> UNCLEAR (${profile.reason.slice(0, 60)})`);
@@ -439,13 +479,15 @@ async function confirm(
         );
       }
       // "missing" — keep probing until BAN_CONFIRMATIONS agree.
+      if (profile.via === "reels") viaReels = true;
     }
 
     console.log(`[ig-views-check] @${username} -> BANNED (confirmed ${BAN_CONFIRMATIONS}x)`);
+    const how = viaReels ? ` (${VIA_REELS})` : "";
     return ungraded(
       username,
       "banned",
-      `profile not found ${BAN_CONFIRMATIONS}x, ${RECHECK_DELAY / 1000}s apart — banned or deleted`,
+      `not found ${BAN_CONFIRMATIONS}x, ${RECHECK_DELAY / 1000}s apart — banned or deleted${how}`,
     );
   } catch (err) {
     noteIfQuotaDead(err);

@@ -1,4 +1,4 @@
-import { fetchProfile } from "./instagram-api";
+import { fetchProfile, probeLivenessWithoutProfile } from "./instagram-api";
 import {
   saveJson,
   loadJson,
@@ -62,6 +62,13 @@ export type IgBanStatus = "alive" | "banned" | "inconclusive";
 export interface IgBanCheckResult {
   username: string;
   status: IgBanStatus;
+  /**
+   * Set only when the profile endpoint had no hand in this row, so a verdict
+   * reached during an outage can be re-examined later on its own terms. A
+   * number with no provenance gets trusted once the reason for doubting it has
+   * been forgotten.
+   */
+  note?: string;
 }
 
 // Single profile probe. Distinguishes a real "account is gone" signal from a
@@ -69,18 +76,38 @@ export interface IgBanCheckResult {
 //   - alive        → profile fetched successfully
 //   - missing      → API explicitly says the profile/data was not found
 //   - inconclusive → network error, rate limit, 5xx, parse error, etc.
-async function probeProfileMissing(
-  username: string,
-): Promise<"missing" | "alive" | "inconclusive"> {
+interface ProbeOutcome {
+  result: "missing" | "alive" | "inconclusive";
+  /** Which endpoints answered, when the profile endpoint could not. */
+  via?: string;
+}
+
+async function probeProfileMissing(username: string): Promise<ProbeOutcome> {
   try {
     await fetchProfile(username);
-    return "alive";
+    return { result: "alive" };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("Profile not found") || msg.includes("data not found")) {
-      return "missing";
+      return { result: "missing" };
     }
-    return "inconclusive";
+
+    // The profile endpoint refused - it did so for five days straight in
+    // November 2026 - and it is not the only endpoint that can answer whether
+    // an account is gone. Ask the ones that are still up rather than reporting
+    // "inconclusive" for an account nobody has actually looked at.
+    //
+    // Only that function's two-witness answers are honoured here, so this
+    // path cannot reach a ban on weaker evidence than the profile path does.
+    // See probeLivenessWithoutProfile for the measurements behind it.
+    const other = await probeLivenessWithoutProfile(username);
+    if (other.state === "alive") {
+      return { result: "alive", via: `${other.via} (${other.how})` };
+    }
+    if (other.state === "missing") {
+      return { result: "missing", via: other.via.join(" + ") };
+    }
+    return { result: "inconclusive" };
   }
 }
 
@@ -89,27 +116,36 @@ async function probeProfileMissing(
 // alive; any transient failure resolves to "inconclusive" (status unknown)
 // instead of a false "banned".
 async function checkProfile(username: string): Promise<IgBanCheckResult> {
+  // Which endpoints a verdict rested on, when the profile one was unavailable.
+  let via: string | undefined;
+
   for (let probe = 0; probe < BAN_CONFIRMATIONS; probe++) {
     if (probe > 0) {
       await new Promise((r) => setTimeout(r, RECHECK_DELAY));
     }
-    const result = await probeProfileMissing(username);
+    const outcome = await probeProfileMissing(username);
+    if (outcome.via) via = outcome.via;
+    const reading = `read from ${via}, profile endpoint refusing`;
 
-    if (result === "alive") {
+    if (outcome.result === "alive") {
       const note = probe === 0 ? "" : " (recovered on recheck)";
-      console.log(`[ig-ban-check] @${username} → ALIVE${note}`);
-      return { username, status: "alive" };
+      console.log(`[ig-ban-check] @${username} → ALIVE${note}${via ? ` [${via}]` : ""}`);
+      return { username, status: "alive", ...(via ? { note: reading } : {}) };
     }
-    if (result === "inconclusive") {
+    if (outcome.result === "inconclusive") {
       const note = probe === 0 ? "(transient)" : "(recheck transient)";
       console.log(`[ig-ban-check] @${username} → INCONCLUSIVE ${note}`);
       return { username, status: "inconclusive" };
     }
-    // result === "missing" → keep probing until we reach BAN_CONFIRMATIONS.
+    // "missing" → keep probing until we reach BAN_CONFIRMATIONS.
   }
 
   console.log(`[ig-ban-check] @${username} → BANNED (confirmed ${BAN_CONFIRMATIONS}x)`);
-  return { username, status: "banned" };
+  return {
+    username,
+    status: "banned",
+    ...(via ? { note: `read from ${via}, profile endpoint refusing` } : {}),
+  };
 }
 
 export interface IgBanCheckProgress {

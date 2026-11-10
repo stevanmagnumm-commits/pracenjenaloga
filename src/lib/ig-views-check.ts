@@ -1,7 +1,7 @@
 import {
   fetchLatestStubs,
   fetchProfile,
-  probeReelsLiveness,
+  probeLivenessWithoutProfile,
   isQuotaExhausted,
   dateFromMediaPk,
 } from "./instagram-api";
@@ -256,8 +256,8 @@ async function withDeadline<T>(
 }
 
 type ProfileState =
-  | { state: "alive"; mediaCount: number | null; via?: "reels" }
-  | { state: "missing"; via?: "reels" }
+  | { state: "alive"; mediaCount: number | null; via?: string }
+  | { state: "missing"; via?: string }
   | { state: "inconclusive"; reason: string };
 
 /**
@@ -287,12 +287,12 @@ async function probeProfile(username: string): Promise<ProfileState> {
     // alive, and the "user does not exist" sentence means gone. Anything
     // else leaves the original refusal standing as the reason, because the
     // account still has not been looked at.
-    const reels = await probeReelsLiveness(username);
-    if (reels.state === "alive") {
-      return { state: "alive", mediaCount: null, via: "reels" };
+    const other = await probeLivenessWithoutProfile(username);
+    if (other.state === "alive") {
+      return { state: "alive", mediaCount: null, via: `${other.via} (${other.how})` };
     }
-    if (reels.state === "missing") {
-      return { state: "missing", via: "reels" };
+    if (other.state === "missing") {
+      return { state: "missing", via: other.via.join(" + ") };
     }
     return { state: "inconclusive", reason: msg };
   }
@@ -304,12 +304,15 @@ async function probeProfile(username: string): Promise<ProfileState> {
  * alone. A number with no provenance is the kind of thing that gets trusted
  * once the reason for doubting it has been forgotten.
  */
-const VIA_REELS = "profile endpoint refusing - read from reels";
+function viaNote(via: string): string {
+  return `profile endpoint refusing - read from ${via}`;
+}
 
-function markedViaReels(result: ViewsCheckResult): ViewsCheckResult {
+function markedViaReels(result: ViewsCheckResult, via: string): ViewsCheckResult {
+  const mark = viaNote(via);
   return {
     ...result,
-    note: result.note ? `${result.note} (${VIA_REELS})` : VIA_REELS,
+    note: result.note ? `${result.note} (${mark})` : mark,
   };
 }
 
@@ -424,7 +427,7 @@ async function triage(
     const profile = await probeProfile(username);
     if (profile.state === "alive") {
       const graded = await gradeAlive(username, profile.mediaCount, isActive);
-      return profile.via === "reels" ? markedViaReels(graded) : graded;
+      return profile.via ? markedViaReels(graded, profile.via) : graded;
     }
     return null;
   } catch (err) {
@@ -455,7 +458,7 @@ async function confirm(
   // the profile one. It changes nothing about the decision - the sentence
   // "user does not exist" is as explicit from one as from the other - but the
   // row says so, so the verdict can be re-examined later on its own terms.
-  let viaReels = false;
+  let viaReels: string | undefined;
   try {
     for (let probe = 0; probe < BAN_CONFIRMATIONS; probe++) {
       if (probe > 0) {
@@ -468,7 +471,7 @@ async function confirm(
         const note = probe === 0 ? "" : " (recovered on recheck)";
         console.log(`[ig-views-check] @${username} -> ALIVE${note}`);
         const graded = await gradeAlive(username, profile.mediaCount, isActive);
-        return profile.via === "reels" ? markedViaReels(graded) : graded;
+        return profile.via ? markedViaReels(graded, profile.via) : graded;
       }
       if (profile.state === "inconclusive") {
         console.log(`[ig-views-check] @${username} -> UNCLEAR (${profile.reason.slice(0, 60)})`);
@@ -479,11 +482,11 @@ async function confirm(
         );
       }
       // "missing" — keep probing until BAN_CONFIRMATIONS agree.
-      if (profile.via === "reels") viaReels = true;
+      if (profile.via) viaReels = profile.via;
     }
 
     console.log(`[ig-views-check] @${username} -> BANNED (confirmed ${BAN_CONFIRMATIONS}x)`);
-    const how = viaReels ? ` (${VIA_REELS})` : "";
+    const how = viaReels ? ` (${viaNote(viaReels)})` : "";
     return ungraded(
       username,
       "banned",

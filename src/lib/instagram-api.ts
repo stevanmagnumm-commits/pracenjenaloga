@@ -674,74 +674,172 @@ export async function fetchLatestStubs(username: string, maxStubs = 36): Promise
 }
 
 /**
- * Liveness read off the reels endpoint, for when the profile endpoint refuses.
+ * Is this account gone, read WITHOUT the profile endpoint.
  *
  * This provider has exactly two profile endpoints - ig_get_fb_profile_v3.php
- * and ig_get_fb_profile.php; the other spellings tried all answer
- * {"message":"Endpoint ... does not exist"} - and on 2026-11-05 both returned
- * 429 to every single call for over an hour, @instagram included, while
- * get_ig_user_reels.php and get_ig_user_posts.php answered normally the whole
- * time. Our own rate then was 76/min against a 280 ceiling and the monthly
- * quota was half unspent, so neither was the cause.
+ * and ig_get_fb_profile.php, every other spelling tried answers
+ * {"message":"Endpoint ... does not exist"} - and from 2026-11-05 to
+ * 2026-11-10 both returned 429 to every call, @instagram included, while
+ * get_ig_user_reels.php, get_ig_user_posts.php and get_ig_user_highlights.php
+ * answered normally throughout. Our rate was 76/min against a 280 ceiling and
+ * the monthly quota was half unspent, so neither was the cause. Five days is
+ * not a window, and a checker resting on that one endpoint was simply
+ * unavailable for all of them: 40 of 40 accounts came back "inconclusive",
+ * each after burning the full 77s retry ladder first.
  *
- * That mattered because the views check asked the profile FIRST and treated
- * the answer as a gate, so a run came out 52 "failed" out of 78 on a question
- * - what do this account's reels average - that the working endpoint could
- * have answered outright.
+ * Measured on 2026-11-10 across the three endpoints that were up:
  *
- * Measured in that same hour, on the reels endpoint:
- *   live account      -> {"reels":[ 12 items ]}
- *   no such user      -> {"error":"Invalid or missing username or user does
- *                         not exist on Instagram"}
- *   confirmed banned  -> that same sentence, or {"error":"reels data not found"}
+ *                     reels     posts     highlights
+ *   alive, posting    12        12        7
+ *   alive, empty      0         0         0            <- empty list, NO error
+ *   no such user      gone      gone      gone         <- "does not exist", all 3
  *
- * So items present is proof of life, and that one sentence is the only thing
- * allowed to mean gone. "reels data not found" is NOT allowed to: it reads
- * both as "this account has no reels" and as a refusal, exactly like the
- * stories endpoint's "stories data not found" - the sentence that once filed
- * 669 live accounts as missing. It comes back inconclusive, and so does every
- * thrown error, because nothing that failed may become a verdict here.
+ * So the question a ban check actually asks - gone, or not gone - has three
+ * independent witnesses. Two rules follow from that table:
+ *
+ *   items in hand is proof of life, and so is an empty list WITH NO ERROR,
+ *   because a username that does not exist never produces one;
+ *
+ *   only the explicit "does not exist" sentence may mean gone, and TWO
+ *   endpoints must say it. One endpoint agreeing with itself twice is what
+ *   produced 218 false bans on 2026-10-21 - both probes fell inside the same
+ *   bad window and so agreed with each other. Two different endpoints
+ *   disagreeing carries information; one repeating itself does not.
+ *
+ * Everything else abstains. "reels data not found" and its siblings are NOT
+ * votes either way: they read both as "no content here" and as a refusal,
+ * exactly like the "stories data not found" sentence that once filed 669 live
+ * accounts as missing.
+ *
+ * Honest about the evidence: "an empty list means alive" rests on three
+ * accounts measured once, and it is not independently confirmed - the
+ * anonymous web cross-check was tried and its own control failed, so it proved
+ * nothing. What IS solid is the narrower claim this function actually relies
+ * on: the provider answers an empty account differently from a non-existent
+ * one. That is the only claim a ban check needs, and it errs toward refusing
+ * to write an account off.
  */
-export type ReelsLiveness =
-  | { state: "alive"; reels: number }
-  | { state: "missing" }
+export type LivenessWitness = "reels" | "posts" | "highlights";
+
+export type LivenessVerdict =
+  | { state: "alive"; via: LivenessWitness; how: "items" | "empty" }
+  | { state: "missing"; via: LivenessWitness[] }
   | { state: "inconclusive"; reason: string };
 
-export async function probeReelsLiveness(username: string): Promise<ReelsLiveness> {
+/** How long to wait before re-asking an endpoint that answered empty. */
+const EMPTY_CONFIRM_DELAY = Number(process.env.IG_LIVENESS_EMPTY_DELAY ?? 2500);
+
+type WitnessAnswer =
+  | { kind: "items"; count: number }
+  | { kind: "empty" }
+  | { kind: "gone" }
+  | { kind: "unclear"; reason: string };
+
+/** One endpoint, one question. `listKey` is null where the answer is a bare array. */
+async function askWitness(
+  endpoint: string,
+  listKey: string | null,
+  username: string,
+): Promise<WitnessAnswer> {
   try {
-    const data = await apiPost("/get_ig_user_reels.php", {
-      username_or_url: username,
-    });
+    const data = await apiPost(endpoint, { username_or_url: username });
 
-    if (data && typeof data === "object" && !Array.isArray(data)) {
+    if (Array.isArray(data)) {
+      return data.length > 0 ? { kind: "items", count: data.length } : { kind: "empty" };
+    }
+
+    if (data && typeof data === "object") {
       const row = data as Record<string, unknown>;
-
-      if (Array.isArray(row.reels) && row.reels.length > 0) {
-        return { state: "alive", reels: row.reels.length };
+      const list = listKey ? row[listKey] : undefined;
+      if (Array.isArray(list)) {
+        return list.length > 0 ? { kind: "items", count: list.length } : { kind: "empty" };
       }
-
       const err = typeof row.error === "string" ? row.error : "";
       if (err) {
-        if (/does not exist|invalid or missing username/i.test(err)) {
-          return { state: "missing" };
-        }
-        return { state: "inconclusive", reason: err };
-      }
-
-      if (Array.isArray(row.reels)) {
-        return { state: "inconclusive", reason: "reels list came back empty" };
+        if (/does not exist|invalid or missing username/i.test(err)) return { kind: "gone" };
+        return { kind: "unclear", reason: err };
       }
     }
 
-    return { state: "inconclusive", reason: "unrecognised answer from the reels endpoint" };
+    return { kind: "unclear", reason: `unrecognised answer from ${endpoint}` };
   } catch (err) {
     // A call that failed says nothing about the account, whatever it says
     // about the provider.
+    return { kind: "unclear", reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+const WITNESSES: Array<{
+  name: LivenessWitness;
+  endpoint: string;
+  listKey: string | null;
+}> = [
+  { name: "reels", endpoint: "/get_ig_user_reels.php", listKey: "reels" },
+  { name: "posts", endpoint: "/get_ig_user_posts.php", listKey: "posts" },
+  { name: "highlights", endpoint: "/get_ig_user_highlights.php", listKey: null },
+];
+
+export async function probeLivenessWithoutProfile(
+  username: string,
+): Promise<LivenessVerdict> {
+  const goneVotes: LivenessWitness[] = [];
+  const unclear: string[] = [];
+  let firstEmpty: (typeof WITNESSES)[number] | null = null;
+
+  for (const w of WITNESSES) {
+    const answer = await askWitness(w.endpoint, w.listKey, username);
+
+    // Stops at the first decisive answer, so a live account that posts costs
+    // one call rather than three.
+    if (answer.kind === "items") {
+      return { state: "alive", via: w.name, how: "items" };
+    }
+    if (answer.kind === "gone") {
+      goneVotes.push(w.name);
+      if (goneVotes.length >= 2) return { state: "missing", via: goneVotes };
+      continue;
+    }
+    if (answer.kind === "empty") {
+      if (!firstEmpty) firstEmpty = w;
+      continue;
+    }
+    unclear.push(`${w.name}: ${answer.reason}`);
+  }
+
+  // An empty answer is confirmed before it is believed. This provider returns
+  // empty lists for accounts that answer normally seconds later - it is why
+  // the reels pager already retries an empty page - so one empty list is not
+  // yet a fact about the account.
+  //
+  // Skipped when some endpoint did say "does not exist": one witness calling
+  // the account gone while another hands back an empty list is a
+  // contradiction, and a contradiction is not a verdict.
+  if (firstEmpty && goneVotes.length === 0) {
+    await new Promise((r) => setTimeout(r, EMPTY_CONFIRM_DELAY));
+    const again = await askWitness(firstEmpty.endpoint, firstEmpty.listKey, username);
+    if (again.kind === "items") return { state: "alive", via: firstEmpty.name, how: "items" };
+    if (again.kind === "empty") return { state: "alive", via: firstEmpty.name, how: "empty" };
+    if (again.kind === "gone") goneVotes.push(firstEmpty.name);
+    else unclear.push(`${firstEmpty.name} (recheck): ${again.reason}`);
+  }
+
+  if (goneVotes.length >= 2) return { state: "missing", via: goneVotes };
+
+  // A single "does not exist" against silence from the others is not enough,
+  // by the two-witness rule above. It abstains rather than deciding.
+  if (goneVotes.length === 1) {
     return {
       state: "inconclusive",
-      reason: err instanceof Error ? err.message : String(err),
+      reason: `only ${goneVotes[0]} said the account is gone; no second endpoint agreed`,
     };
   }
+
+  return {
+    state: "inconclusive",
+    reason: unclear.length
+      ? unclear.join("; ").slice(0, 200)
+      : "no endpoint gave a usable answer",
+  };
 }
 
 async function fetchMediaDetailOnce(shortcode: string): Promise<NormalizedMedia | null> {

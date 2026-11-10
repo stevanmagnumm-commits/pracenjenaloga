@@ -690,8 +690,8 @@ export async function fetchLatestStubs(username: string, maxStubs = 36): Promise
  * Measured on 2026-11-10 across the three endpoints that were up:
  *
  *                     reels     posts     highlights
- *   alive, posting    12        12        7
- *   alive, empty      0         0         0            <- empty list, NO error
+ *   alive, public     12        12        7
+ *   alive, PRIVATE    0         0         0            <- empty list, NO error
  *   no such user      gone      gone      gone         <- "does not exist", all 3
  *
  * So the question a ban check actually asks - gone, or not gone - has three
@@ -711,13 +711,18 @@ export async function fetchLatestStubs(username: string, maxStubs = 36): Promise
  * exactly like the "stories data not found" sentence that once filed 669 live
  * accounts as missing.
  *
- * Honest about the evidence: "an empty list means alive" rests on three
- * accounts measured once, and it is not independently confirmed - the
- * anonymous web cross-check was tried and its own control failed, so it proved
- * nothing. What IS solid is the narrower claim this function actually relies
- * on: the provider answers an empty account differently from a non-existent
- * one. That is the only claim a ban check needs, and it errs toward refusing
- * to write an account off.
+ * The middle row is the one worth understanding, because the empty lists are
+ * not emptiness. Once the profile endpoint came back up the same three
+ * accounts were asked directly, and all three answered alive and private -
+ * with 36, 148 and 0 posts. A private account simply does not show its reels,
+ * posts or highlights to an unauthenticated caller, so empty lists are the
+ * EXPECTED answer for one, and a private account is about as far from banned
+ * as an account gets.
+ *
+ * That also settles what was open while the profile endpoint was down: an
+ * earlier attempt to confirm these accounts through the anonymous web page
+ * proved nothing, because its own control failed too. The profile endpoint
+ * confirmed it instead.
  */
 export type LivenessWitness = "reels" | "posts" | "highlights";
 

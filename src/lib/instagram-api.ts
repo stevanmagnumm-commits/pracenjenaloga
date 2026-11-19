@@ -121,6 +121,135 @@ async function retryWait(status: number, attempt: number, endpoint: string, retr
 const API_TIMEOUT_MS = Math.max(5_000, Number(process.env.IG_API_TIMEOUT_MS) || 20_000);
 const TIMEOUT_STATUS = 408;
 
+/**
+ * A dead endpoint should be noticed once, not rediscovered per account.
+ *
+ * Measured on 19 November, on the live service: the profile endpoint spent a
+ * bad window refusing calls, 721 of them in one morning, and the retry ladder
+ * ran to its last rung almost every time - the depth histogram was flat,
+ * 132/140/148/152/149 across retries one through five. That is 2+5+10+20+40 =
+ * 77 seconds spent per account to be told "no" six times, out of the 120 an
+ * account is allowed. The fallback that reads the same account off its reels
+ * needs about twenty seconds and it works: all eight accounts graded in that
+ * run were graded through it. Those were not the accounts that failed. The
+ * other 32 ran out of clock while the ladder slept.
+ *
+ * So the ladder is right for one bad call and wrong for a bad endpoint, and
+ * what follows tells those apart by counting refusals IN A ROW. That is
+ * deliberately not a refusal rate. During the same window the reels endpoint
+ * was refusing about a quarter of its calls while answering the rest, and eight
+ * of those in a row is a 1-in-65000 event, so a flaky endpoint is left alone to
+ * be retried exactly as before. An endpoint that has refused eight times
+ * running is not flaky - it has stopped answering - and the useful thing is to
+ * stop asking and leave the remaining seconds to the caller's fallback.
+ *
+ * Cold is never permanent and never trusted for long: one call every ten
+ * seconds is let through to see whether it is back, and one real answer clears
+ * the state completely.
+ */
+const BREAKER_THRESHOLD = Math.max(2, Number(process.env.IG_BREAKER_THRESHOLD) || 8);
+const BREAKER_COLD_MS = Math.max(5_000, Number(process.env.IG_BREAKER_COLD_MS) || 60_000);
+const BREAKER_PROBE_MS = Math.max(1_000, Number(process.env.IG_BREAKER_PROBE_MS) || 10_000);
+
+type EndpointHealth = {
+  refusalsInARow: number;
+  coldUntil: number;
+  lastProbe: number;
+  probing: boolean;
+};
+
+const endpointHealth = new Map<string, EndpointHealth>();
+
+function healthOf(endpoint: string): EndpointHealth {
+  let health = endpointHealth.get(endpoint);
+  if (!health) {
+    health = { refusalsInARow: 0, coldUntil: 0, lastProbe: 0, probing: false };
+    endpointHealth.set(endpoint, health);
+  }
+  return health;
+}
+
+/**
+ * Whether this attempt may go out. While an endpoint is cold each attempt is
+ * turned back here - before the rate-limit slot and before the request, so a
+ * skip costs neither a call nor a place in the queue - except for the probe
+ * that checks whether it has recovered.
+ */
+function breakerAllows(endpoint: string): boolean {
+  const health = healthOf(endpoint);
+  const now = Date.now();
+  if (now >= health.coldUntil) return true;
+  if (health.probing) return false;
+  if (now - health.lastProbe < BREAKER_PROBE_MS) return false;
+  health.lastProbe = now;
+  health.probing = true;
+  console.log(`[api] ${endpoint} is cold - letting one probe through`);
+  return true;
+}
+
+/**
+ * The sentence the breaker refuses with.
+ *
+ * Its wording is load-bearing. Five tools decide "banned or deleted" by reading
+ * a thrown message, so this has to say "the lookup failed" in words
+ * NOT_A_VERDICT recognises - which is why it says "temporarily unavailable" -
+ * and must not contain any absence wording at all. A breaker that saved time by
+ * writing live accounts off would be worse than the ladder it replaces.
+ */
+function breakerReason(endpoint: string): string {
+  const health = healthOf(endpoint);
+  const left = Math.max(0, Math.round((health.coldUntil - Date.now()) / 1000));
+  return (
+    `API skipped ${endpoint}: endpoint temporarily unavailable after ` +
+    `${health.refusalsInARow} refusals in a row, retrying in ${left}s`
+  );
+}
+
+/** A failure to answer, as opposed to an answer. Only these count against health. */
+function noteRefusal(endpoint: string, reason: string): void {
+  const health = healthOf(endpoint);
+  health.refusalsInARow++;
+  health.probing = false;
+  if (health.refusalsInARow < BREAKER_THRESHOLD) return;
+  const alreadyCold = health.coldUntil > Date.now();
+  health.coldUntil = Date.now() + BREAKER_COLD_MS;
+  if (!alreadyCold) {
+    console.error(
+      `[api] ${endpoint} going cold for ${BREAKER_COLD_MS / 1000}s after ` +
+        `${health.refusalsInARow} refusals in a row: ${reason.slice(0, 80)}`,
+    );
+  }
+}
+
+/**
+ * A real answer. Whatever it says about the account - even that there is no
+ * such account - the endpoint itself is working, so its health resets.
+ */
+function noteAnswer(endpoint: string): void {
+  const health = healthOf(endpoint);
+  if (health.coldUntil > Date.now()) console.log(`[api] ${endpoint} is answering again`);
+  health.refusalsInARow = 0;
+  health.coldUntil = 0;
+  health.probing = false;
+}
+
+/** Endpoints being skipped right now, for the screen and for tests. */
+export function getColdEndpoints(): { endpoint: string; refusals: number; secondsLeft: number }[] {
+  const now = Date.now();
+  return [...endpointHealth.entries()]
+    .filter(([, health]) => health.coldUntil > now)
+    .map(([endpoint, health]) => ({
+      endpoint,
+      refusals: health.refusalsInARow,
+      secondsLeft: Math.round((health.coldUntil - now) / 1000),
+    }));
+}
+
+/** Test seam only - production never clears this by hand. */
+export function __resetEndpointHealthForTest(): void {
+  endpointHealth.clear();
+}
+
 type FetchOutcome =
   | { ok: true; response: Response }
   | { ok: false; reason: string };
@@ -245,6 +374,8 @@ async function fetchWithDeadline(url: string, init: RequestInit): Promise<FetchO
 
 async function apiPost(endpoint: string, body: Record<string, string>, retries = 5): Promise<unknown> {
   for (let attempt = 0; attempt <= retries; attempt++) {
+    // Before the slot and before the call: a cold endpoint costs nothing here.
+    if (!breakerAllows(endpoint)) throw new Error(breakerReason(endpoint));
     trackApiCall();
     const outcome = await fetchWithDeadline(`${BASE_URL}${endpoint}`, {
       method: "POST",
@@ -256,6 +387,7 @@ async function apiPost(endpoint: string, body: Record<string, string>, retries =
       body: new URLSearchParams(body).toString(),
     });
     if (!outcome.ok) {
+      noteRefusal(endpoint, outcome.reason);
       if (attempt < retries) {
         await retryWait(TIMEOUT_STATUS, attempt, endpoint, null);
         continue;
@@ -267,6 +399,7 @@ async function apiPost(endpoint: string, body: Record<string, string>, retries =
       const parsed = await readJsonBody(response);
       if (!parsed.ok) {
         if (MONTHLY_QUOTA_RE.test(parsed.reason)) throw quotaError(parsed.reason);
+        noteRefusal(endpoint, parsed.reason);
         if (attempt < retries) {
           // A per-minute cap needs a real pause, not the 2s a hiccup gets, so
           // it backs off on the 429 ladder rather than the transient one.
@@ -276,15 +409,23 @@ async function apiPost(endpoint: string, body: Record<string, string>, retries =
         }
         throw new Error(`API gave up on ${endpoint}: ${withoutAbsenceWording(parsed.reason)}`);
       }
+      noteAnswer(endpoint);
       return parsed.data;
     }
     // Read the body before deciding to retry: a 429 can mean "slow down for a
     // few seconds" or "your month is gone", and only the body tells them apart.
     const text = await response.text();
     if (MONTHLY_QUOTA_RE.test(text)) throw quotaError(text);
-    if (RETRYABLE_STATUS.has(response.status) && attempt < retries) {
-      await retryWait(response.status, attempt, endpoint, response.headers.get("retry-after"));
-      continue;
+    if (RETRYABLE_STATUS.has(response.status)) {
+      noteRefusal(endpoint, `HTTP ${response.status}`);
+      if (attempt < retries) {
+        await retryWait(response.status, attempt, endpoint, response.headers.get("retry-after"));
+        continue;
+      }
+    } else {
+      // A 404 or a 400 is the endpoint working and answering about the request.
+      // Only a refusal counts against its health.
+      noteAnswer(endpoint);
     }
     throw new Error(`API error ${response.status}: ${withoutAbsenceWording(text)}`);
   }
@@ -293,6 +434,8 @@ async function apiPost(endpoint: string, body: Record<string, string>, retries =
 
 async function apiGet(endpoint: string, retries = 5): Promise<unknown> {
   for (let attempt = 0; attempt <= retries; attempt++) {
+    // Before the slot and before the call: a cold endpoint costs nothing here.
+    if (!breakerAllows(endpoint)) throw new Error(breakerReason(endpoint));
     trackApiCall();
     const outcome = await fetchWithDeadline(`${BASE_URL}${endpoint}`, {
       method: "GET",
@@ -302,6 +445,7 @@ async function apiGet(endpoint: string, retries = 5): Promise<unknown> {
       },
     });
     if (!outcome.ok) {
+      noteRefusal(endpoint, outcome.reason);
       if (attempt < retries) {
         await retryWait(TIMEOUT_STATUS, attempt, endpoint, null);
         continue;
@@ -313,6 +457,7 @@ async function apiGet(endpoint: string, retries = 5): Promise<unknown> {
       const parsed = await readJsonBody(response);
       if (!parsed.ok) {
         if (MONTHLY_QUOTA_RE.test(parsed.reason)) throw quotaError(parsed.reason);
+        noteRefusal(endpoint, parsed.reason);
         if (attempt < retries) {
           // A per-minute cap needs a real pause, not the 2s a hiccup gets, so
           // it backs off on the 429 ladder rather than the transient one.
@@ -322,15 +467,23 @@ async function apiGet(endpoint: string, retries = 5): Promise<unknown> {
         }
         throw new Error(`API gave up on ${endpoint}: ${withoutAbsenceWording(parsed.reason)}`);
       }
+      noteAnswer(endpoint);
       return parsed.data;
     }
     // Read the body before deciding to retry: a 429 can mean "slow down for a
     // few seconds" or "your month is gone", and only the body tells them apart.
     const text = await response.text();
     if (MONTHLY_QUOTA_RE.test(text)) throw quotaError(text);
-    if (RETRYABLE_STATUS.has(response.status) && attempt < retries) {
-      await retryWait(response.status, attempt, endpoint, response.headers.get("retry-after"));
-      continue;
+    if (RETRYABLE_STATUS.has(response.status)) {
+      noteRefusal(endpoint, `HTTP ${response.status}`);
+      if (attempt < retries) {
+        await retryWait(response.status, attempt, endpoint, response.headers.get("retry-after"));
+        continue;
+      }
+    } else {
+      // A 404 or a 400 is the endpoint working and answering about the request.
+      // Only a refusal counts against its health.
+      noteAnswer(endpoint);
     }
     throw new Error(`API error ${response.status}: ${withoutAbsenceWording(text)}`);
   }
@@ -347,6 +500,8 @@ async function mcGet(
   retries = 5,
 ): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
   for (let attempt = 0; attempt <= retries; attempt++) {
+    // Before the slot and before the call: a cold endpoint costs nothing here.
+    if (!breakerAllows(path)) return { ok: false, status: 503, data: { error: breakerReason(path) } };
     trackApiCall();
     const outcome = await fetchWithDeadline(`${BASE_URL}${path}`, {
       method: "GET",
@@ -356,6 +511,7 @@ async function mcGet(
       },
     });
     if (!outcome.ok) {
+      noteRefusal(path, outcome.reason);
       if (attempt < retries) {
         await retryWait(TIMEOUT_STATUS, attempt, path, null);
         continue;
@@ -364,11 +520,17 @@ async function mcGet(
     }
     const response = outcome.response;
     if (response.ok) {
+      noteAnswer(path);
       return { ok: true, status: response.status, data: (await response.json()) as Record<string, unknown> };
     }
-    if (RETRYABLE_STATUS.has(response.status) && attempt < retries) {
-      await retryWait(response.status, attempt, path, response.headers.get("retry-after"));
-      continue;
+    if (RETRYABLE_STATUS.has(response.status)) {
+      noteRefusal(path, `HTTP ${response.status}`);
+      if (attempt < retries) {
+        await retryWait(response.status, attempt, path, response.headers.get("retry-after"));
+        continue;
+      }
+    } else {
+      noteAnswer(path);
     }
     let data: Record<string, unknown> = {};
     try {

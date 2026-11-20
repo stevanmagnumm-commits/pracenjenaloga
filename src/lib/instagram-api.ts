@@ -86,12 +86,85 @@ const MONTHLY_QUOTA_RE = /exceeded the monthly quota|monthly quota for requests/
 export const QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED";
 
 function quotaError(detail: string): Error {
-  return new Error(`${QUOTA_EXHAUSTED}: ${detail.slice(0, 160)}`);
+  const err = new Error(`${QUOTA_EXHAUSTED}: ${detail.slice(0, 160)}`);
+  // Set lazily: apiWallReason is defined below, and both walls record the same way.
+  standingWall =
+    "Monthly API quota exhausted — run stopped. Nothing will check until the plan resets or is upgraded.";
+  return err;
 }
 
 export function isQuotaExhausted(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return msg.includes(QUOTA_EXHAUSTED);
+}
+
+/**
+ * The other wall, and it is not the monthly one.
+ *
+ * On 20 November the subscription itself stopped answering: the RapidAPI
+ * gateway returned 403 {"message":"You are not subscribed to this API."} for
+ * every call. Two things went wrong at once, and both are here.
+ *
+ * 403 is not in RETRYABLE_STATUS, so it fell into the branch that reads "the
+ * endpoint answered something about the request" and called noteAnswer - which
+ * cleared the breaker's cold state. The log shows the result plainly: cold,
+ * then "answering again" two seconds later, then cold again, around and
+ * around, without a single successful call in between. A refusal from the
+ * gateway was being counted as proof that the endpoint was healthy.
+ *
+ * And nothing stopped the run. A link-finder pass over 4826 accounts
+ * "completed" in 86 seconds with every row unreadable, which reads like a
+ * finding about those accounts rather than an outage. The monthly quota
+ * already had the right shape for this - recognise it, fail immediately, let
+ * the caller stop the whole run - so this takes the same shape.
+ */
+const ACCESS_DENIED_STATUS = new Set([401, 403]);
+export const API_ACCESS_DENIED = "API_ACCESS_DENIED";
+
+/**
+ * The wall, remembered where it happens.
+ *
+ * Throwing is not enough on its own. Across the three tools there are fourteen
+ * places that catch around an API call, and several swallow whole - the link
+ * finder's 4826-row run died inside `catch { note = "last post unreadable" }`,
+ * so nothing upstream ever learned the subscription was gone and the run
+ * reported itself finished. One swallowed throw is all it takes, so the fact
+ * is recorded here instead of being carried by an error that may not survive
+ * the journey. A run's loop reads it directly and stops.
+ *
+ * Cleared by any real answer, and by each run at its start, so a subscription
+ * that comes back does not leave a stale wall behind.
+ */
+let standingWall: string | null = null;
+
+export function standingApiWall(): string | null {
+  return standingWall;
+}
+
+export function clearApiWall(): void {
+  standingWall = null;
+}
+
+function accessError(status: number, detail: string): Error {
+  const err = new Error(`${API_ACCESS_DENIED}: HTTP ${status} ${detail.slice(0, 160)}`);
+  standingWall = apiWallReason(err);
+  return err;
+}
+
+/**
+ * The sentence a run should stop with, or null when the error is an ordinary
+ * failure a run can keep working through. One place, so all four tools say the
+ * same true thing about which wall they hit.
+ */
+export function apiWallReason(err: unknown): string | null {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes(QUOTA_EXHAUSTED)) {
+    return "Monthly API quota exhausted — run stopped. Nothing will check until the plan resets or is upgraded.";
+  }
+  if (msg.includes(API_ACCESS_DENIED)) {
+    return "The API subscription is refusing this key (HTTP 403) — run stopped. Nothing will check until the subscription is active again.";
+  }
+  return null;
 }
 
 // A request that timed out is not the same as being told to slow down. It has
@@ -226,6 +299,7 @@ function noteRefusal(endpoint: string, reason: string): void {
  * such account - the endpoint itself is working, so its health resets.
  */
 function noteAnswer(endpoint: string): void {
+  standingWall = null;
   const health = healthOf(endpoint);
   if (health.coldUntil > Date.now()) console.log(`[api] ${endpoint} is answering again`);
   health.refusalsInARow = 0;
@@ -416,6 +490,10 @@ async function apiPost(endpoint: string, body: Record<string, string>, retries =
     // few seconds" or "your month is gone", and only the body tells them apart.
     const text = await response.text();
     if (MONTHLY_QUOTA_RE.test(text)) throw quotaError(text);
+    // Before anything counts this as an answer: a gateway refusal is neither a
+    // transient failure nor a fact about the account, and it does not clear
+    // the breaker.
+    if (ACCESS_DENIED_STATUS.has(response.status)) throw accessError(response.status, text);
     if (RETRYABLE_STATUS.has(response.status)) {
       noteRefusal(endpoint, `HTTP ${response.status}`);
       if (attempt < retries) {
@@ -474,6 +552,10 @@ async function apiGet(endpoint: string, retries = 5): Promise<unknown> {
     // few seconds" or "your month is gone", and only the body tells them apart.
     const text = await response.text();
     if (MONTHLY_QUOTA_RE.test(text)) throw quotaError(text);
+    // Before anything counts this as an answer: a gateway refusal is neither a
+    // transient failure nor a fact about the account, and it does not clear
+    // the breaker.
+    if (ACCESS_DENIED_STATUS.has(response.status)) throw accessError(response.status, text);
     if (RETRYABLE_STATUS.has(response.status)) {
       noteRefusal(endpoint, `HTTP ${response.status}`);
       if (attempt < retries) {
@@ -529,7 +611,7 @@ async function mcGet(
         await retryWait(response.status, attempt, path, response.headers.get("retry-after"));
         continue;
       }
-    } else {
+    } else if (!ACCESS_DENIED_STATUS.has(response.status)) {
       noteAnswer(path);
     }
     let data: Record<string, unknown> = {};

@@ -2,7 +2,9 @@ import {
   fetchLatestStubs,
   fetchProfile,
   probeLivenessWithoutProfile,
-  isQuotaExhausted,
+  apiWallReason,
+  standingApiWall,
+  clearApiWall,
   dateFromMediaPk,
 } from "./instagram-api";
 import {
@@ -199,11 +201,26 @@ let runToken = 0;
 // isActive(), so both passes wind down instead of hammering a dead plan.
 let quotaAbort: string | null = null;
 
+/**
+ * Whether the API itself is walled off - quota gone, or the subscription
+ * refusing the key. Read from the API layer rather than from a caught error,
+ * because a caught error can be swallowed and this must not be missable.
+ */
+function wallHit(): boolean {
+  if (quotaAbort) return true;
+  const wall = standingApiWall();
+  if (!wall) return false;
+  quotaAbort = wall;
+  console.error("[ig-views-check] ABORT: " + wall);
+  return true;
+}
+
 function noteIfQuotaDead(err: unknown): void {
-  if (!quotaAbort && isQuotaExhausted(err)) {
-    quotaAbort = "Monthly API quota exhausted — run stopped. Nothing will check until the plan resets or is upgraded.";
-    console.error(`[ig-views-check] ABORT: ${quotaAbort}`);
-  }
+  if (quotaAbort) return;
+  const wall = apiWallReason(err);
+  if (!wall) return;
+  quotaAbort = wall;
+  console.error(`[ig-views-check] ABORT: ${quotaAbort}`);
 }
 
 export function getIgViewsCheckProgress(): ViewsCheckProgress {
@@ -569,7 +586,8 @@ async function gradeBatchWork(
 ): Promise<void> {
   const myToken = ++runToken;
   quotaAbort = null;
-  const isActive = () => progress.running && runToken === myToken && !quotaAbort;
+  clearApiWall();
+  const isActive = () => progress.running && runToken === myToken && !wallHit();
 
   progress = freshProgress(total, true);
   const log = new ResultLog<ViewsCheckResult>(RESULTS_FILE);

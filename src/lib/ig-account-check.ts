@@ -3,7 +3,9 @@ import {
   fetchHighlights,
   fetchLastPostAt,
   fetchActiveStories,
-  isQuotaExhausted,
+  apiWallReason,
+  standingApiWall,
+  clearApiWall,
 } from "./instagram-api";
 import { runInLane, laneWorkers } from "./api-lanes";
 
@@ -118,6 +120,22 @@ let progress: AccountCheckProgress = fresh(
 );
 let runToken = 0;
 let quotaAbort: string | null = null;
+
+/**
+ * Whether the API itself is walled off - quota gone, or the subscription
+ * refusing the key. Read from the API layer rather than from a caught error,
+ * because `catch { note = "last post unreadable" }` below swallows whole and
+ * this must not be missable: that swallow is how a 4826-account run reported
+ * itself finished while nothing had been looked at.
+ */
+function wallHit(): boolean {
+  if (quotaAbort) return true;
+  const wall = standingApiWall();
+  if (!wall) return false;
+  quotaAbort = wall;
+  console.error("[ig-account-check] ABORT: " + wall);
+  return true;
+}
 
 export function getAccountCheckProgress(): AccountCheckProgress {
   return progress;
@@ -277,7 +295,8 @@ async function accountRun(
 
   const myToken = ++runToken;
   quotaAbort = null;
-  const alive = () => progress.running && runToken === myToken && !quotaAbort;
+  clearApiWall();
+  const alive = () => progress.running && runToken === myToken && !wallHit();
   progress = fresh(cleaned.length, wants, true);
 
   console.log(
@@ -300,9 +319,9 @@ async function accountRun(
         const r = await inspect(u, wants);
         if (alive()) progress.results.push(r);
       } catch (err) {
-        if (isQuotaExhausted(err) && !quotaAbort) {
-          quotaAbort =
-            "Monthly API quota exhausted — run stopped. Nothing will check until the plan resets.";
+        const wall = apiWallReason(err);
+        if (wall && !quotaAbort) {
+          quotaAbort = wall;
           console.error("[ig-account-check] ABORT: " + quotaAbort);
         }
         if (alive()) {

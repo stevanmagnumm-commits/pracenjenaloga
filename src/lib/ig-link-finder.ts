@@ -4,7 +4,9 @@ import {
   fetchHighlights,
   fetchHighlightLinks,
   bioLinksFromProfile,
-  isQuotaExhausted,
+  apiWallReason,
+  standingApiWall,
+  clearApiWall,
   type HighlightRef,
 } from "./instagram-api";
 import {
@@ -239,12 +241,26 @@ let progress: LinkFinderProgress = freshProgress(false);
 let runToken = 0;
 let quotaAbort: string | null = null;
 
+/**
+ * Whether the API itself is walled off - quota gone, or the subscription
+ * refusing the key. Read from the API layer rather than from a caught error,
+ * because a caught error can be swallowed and this must not be missable.
+ */
+function wallHit(): boolean {
+  if (quotaAbort) return true;
+  const wall = standingApiWall();
+  if (!wall) return false;
+  quotaAbort = wall;
+  console.error("[ig-link-finder] ABORT: " + wall);
+  return true;
+}
+
 function noteIfQuotaDead(err: unknown): void {
-  if (!quotaAbort && isQuotaExhausted(err)) {
-    quotaAbort =
-      "Monthly API quota exhausted — run stopped. Nothing will check until the plan resets or is upgraded.";
-    console.error(`[ig-link-finder] ABORT: ${quotaAbort}`);
-  }
+  if (quotaAbort) return;
+  const wall = apiWallReason(err);
+  if (!wall) return;
+  quotaAbort = wall;
+  console.error(`[ig-link-finder] ABORT: ${quotaAbort}`);
 }
 
 export function getLinkFinderProgress(): LinkFinderProgress {
@@ -650,11 +666,12 @@ async function finderRun(
 
   const myToken = ++runToken;
   quotaAbort = null;
+  clearApiWall();
 
   progress = freshProgress(true, cleanSeeds.length);
   await removeFiles(WORK_FILE, RESULTS_FILE);
 
-  const isActive = () => progress.running && runToken === myToken && !quotaAbort;
+  const isActive = () => progress.running && runToken === myToken && !wallHit();
 
   try {
     // Phase 1 — collect suggestions. One call per seed, ~80 accounts each, and
@@ -774,7 +791,7 @@ async function checkPhaseWork(
   checkHighlights: boolean,
   myToken: number,
 ): Promise<void> {
-  const isActive = () => progress.running && runToken === myToken && !quotaAbort;
+  const isActive = () => progress.running && runToken === myToken && !wallHit();
   const log = new ResultLog<LinkFinderResult>(RESULTS_FILE);
 
   const known = await primeSeen();
@@ -903,6 +920,7 @@ async function finderResume(): Promise<boolean> {
 
   const myToken = ++runToken;
   quotaAbort = null;
+  clearApiWall();
 
   progress = freshProgress(true, saved.seedsTotal);
   progress.startedAt = saved.startedAt; // the original clock, not this restart

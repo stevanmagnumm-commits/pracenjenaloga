@@ -1104,7 +1104,16 @@ const LOOTER_TIMEOUT_MS = Math.max(5_000, Number(process.env.IG_LOOTER_TIMEOUT_M
 // is a guess made deliberately low. Measured 1.0-3.4s per call; eight in
 // flight is roughly three a second, which no sane provider minds.
 const LOOTER_CONCURRENCY = Math.max(1, Number(process.env.IG_LOOTER_CONCURRENCY) || 8);
-const LOOTER_RETRIES = 2;
+// Four attempts, not two, and the reason is absence rather than failure.
+//
+// Minutes after this provider went live, DgHwEakpbzV answered 546 views, then
+// "This post does not exist.", then 546 views again - three calls, two
+// truths and one lie, and the run in between had already written that reel
+// off. So an absence is only believed when EVERY attempt says it, and a single
+// answer carrying a number ends the matter. Four attempts put a false
+// "does not exist" at roughly one in eighty at the flake rate measured, and a
+// reel that really is gone costs four calls out of 75,000 a month.
+const LOOTER_RETRIES = 3;
 
 /** Said in a thrown or returned reason when the per-reel plan is spent. */
 export const PER_REEL_QUOTA_GONE = "PER_REEL_QUOTA_GONE";
@@ -1201,9 +1210,14 @@ async function looterGet(url: string): Promise<LooterOutcome> {
 export async function probeReelViews(shortcode: string): Promise<ReelProbe> {
   const url = `https://www.instagram.com/reel/${shortcode}/`;
   let last = "no attempt was made";
+  // Attempts that said the post is not there, and attempts made at all. Only
+  // when those two are equal has the absence actually been confirmed.
+  let absences = 0;
+  let attempts = 0;
 
   for (let attempt = 0; attempt <= LOOTER_RETRIES; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, 1_500 * attempt));
+    attempts++;
 
     const out = await looterGet(url);
     if (!out.ok) {
@@ -1224,7 +1238,9 @@ export async function probeReelViews(shortcode: string): Promise<ReelProbe> {
       // split as profileErrorFor: "try again later" inside a sentence about
       // something not being found means the lookup failed, not the reel.
       if (said && !NOT_A_VERDICT.test(said) && /does not exist|not found|removed|deleted|unavailable/i.test(said)) {
-        return { state: "missing", reason: said };
+        absences++;
+        last = said;
+        continue;
       }
       last = said || "the provider refused without saying why";
       continue;
@@ -1254,6 +1270,19 @@ export async function probeReelViews(shortcode: string): Promise<ReelProbe> {
     };
   }
 
+  // Unanimous across every attempt, so it is a fact about the post rather than
+  // a bad moment at the provider. Still never a verdict on the account.
+  if (absences > 0 && absences === attempts) {
+    return { state: "missing", reason: last };
+  }
+  if (absences > 0) {
+    return {
+      state: "inconclusive",
+      reason:
+        `the provider said "${last.slice(0, 60)}" on ${absences} of ${attempts} tries ` +
+        "and answered differently on the rest - not trusted either way",
+    };
+  }
   return { state: "inconclusive", reason: last.slice(0, 160) };
 }
 

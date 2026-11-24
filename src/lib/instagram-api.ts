@@ -984,19 +984,24 @@ const REEL_URL_RE =
   /instagram\.com\/(?:[^/\s]+\/)?(?:reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i;
 
 /**
- * The shortcode in a pasted line, or null.
+ * The shortcode in a pasted line, or null. A real instagram.com link is
+ * required - a bare code is not accepted, and that is deliberate.
  *
- * A bare code is accepted only at exactly 11 characters with a capital in it.
- * Without that guard "ashleyganttie" is a perfectly good shortcode as far as
- * the character set is concerned, and a username silently becomes a reel
- * nobody can find.
+ * The first version took a bare token of eleven characters with a capital in
+ * it, on the theory that a username would not look like that. The live run
+ * disproved it immediately: the line "nemaURLovde" sailed through as a
+ * shortcode, and the test had missed it only because its own example happened
+ * to be twelve characters long. Shortcodes and ordinary words share both the
+ * character set and the length, so no test on the shape of the text can tell
+ * them apart. The link is the only honest signal.
+ *
+ * Nothing is lost by refusing: a line with no link lands in the skipped list,
+ * which the screen prints, so a line that was not measured says so instead of
+ * becoming a reel nobody can find.
  */
 export function extractShortcode(text: string): string | null {
-  const t = text.trim();
-  const m = REEL_URL_RE.exec(t);
-  if (m) return m[1];
-  if (/^[A-Za-z0-9_-]{11}$/.test(t) && /[A-Z]/.test(t)) return t;
-  return null;
+  const m = REEL_URL_RE.exec(text.trim());
+  return m ? m[1] : null;
 }
 
 export interface OwnerReelIndex {

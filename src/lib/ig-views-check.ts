@@ -609,7 +609,10 @@ export function parseReelLines(lines: string[]): { jobs: ReelViewsJob[]; bad: st
       const code = extractShortcode(token);
       if (code && !shortcode) {
         shortcode = code;
-        url = /^https?:/i.test(token) ? token : `https://www.instagram.com/reel/${code}/`;
+        // Normalised rather than echoed: a pasted link can carry a tracking
+        // tail, and the row's link should point at the reel, not at whatever
+        // the share sheet appended.
+        url = `https://www.instagram.com/reel/${code}/`;
       } else if (!label) {
         label = token.replace(/^@/, "").toLowerCase();
       }

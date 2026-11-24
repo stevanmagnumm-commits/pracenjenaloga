@@ -917,6 +917,212 @@ export async function fetchLatestStubs(username: string, maxStubs = 36): Promise
   return fetchAllStubs(username, maxStubs);
 }
 
+/* -------------------------------------------------------------------------- *
+ * One named reel, instead of an account's average.
+ *
+ * The Views Checker grades an account by the mean of its last VIEWS_WINDOW
+ * reels. A different question gets asked just as often - "how did THIS post
+ * do" - and until now the only way to answer it was to grade the whole account
+ * and read the number off a window the reel may not even be inside.
+ *
+ * There are two ways to the number and they are not equal, measured
+ * 2026-11-24 on the live plan:
+ *
+ *   - get_media_data_v2.php?media_code=CODE is the direct way, one call per
+ *     reel. On that date it answered {"error":"Media data not found. Try again
+ *     later."} for EVERY code, including DgG_FlRKaj8, which the same key had
+ *     just listed among the account's reels seconds earlier. The control is
+ *     what makes that a statement about the endpoint rather than about the
+ *     reel. Both spellings (v2 and the older get_media_data.php) answered
+ *     identically, and a nonexistent endpoint answers something else entirely
+ *     ("Endpoint ... does not exist"), so the route is live and its backend is
+ *     not. Worth keeping and worth trying, because the day it answers again it
+ *     is one call instead of three.
+ *
+ *   - get_ig_user_reels.php lists an owner's reels WITH their view counts, so
+ *     one call answers every pasted reel of the same account at once. Its
+ *     weakness is freshness: on 2026-11-24 at 13:05 UTC, four accounts' lists
+ *     all stopped at 04:20-05:10 UTC, so reels posted at 10:28-11:43 were
+ *     nowhere in them. A reel this list has not reached yet has no view count
+ *     here, and saying so is the only honest answer - a zero would read as a
+ *     reel nobody watched.
+ * -------------------------------------------------------------------------- */
+
+const SHORTCODE_ALPHABET =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/**
+ * The media id hidden inside a shortcode.
+ *
+ * A shortcode is the media pk written in base64 with that alphabet, so the id -
+ * and through dateFromMediaPk the posting time - is readable from the URL
+ * alone, without spending a call. That is what lets a row say "this reel is two
+ * hours old and the provider's list stops six hours back" instead of just
+ * "not found".
+ */
+export function pkFromShortcode(code: string): string | null {
+  // BigInt(0) rather than 0n: the project targets ES2017, where the literal
+  // form is a compile error. dateFromMediaPk above does the same.
+  const ZERO = BigInt(0);
+  const BASE = BigInt(64);
+  let pk = ZERO;
+  for (const ch of code) {
+    const i = SHORTCODE_ALPHABET.indexOf(ch);
+    if (i < 0) return null;
+    pk = pk * BASE + BigInt(i);
+  }
+  return pk > ZERO ? pk.toString() : null;
+}
+
+/** When a reel was posted, read out of its URL alone - no API call. */
+export function dateFromShortcode(code: string): Date | null {
+  const pk = pkFromShortcode(code);
+  return pk ? dateFromMediaPk(pk) : null;
+}
+
+const REEL_URL_RE =
+  /instagram\.com\/(?:[^/\s]+\/)?(?:reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i;
+
+/**
+ * The shortcode in a pasted line, or null.
+ *
+ * A bare code is accepted only at exactly 11 characters with a capital in it.
+ * Without that guard "ashleyganttie" is a perfectly good shortcode as far as
+ * the character set is concerned, and a username silently becomes a reel
+ * nobody can find.
+ */
+export function extractShortcode(text: string): string | null {
+  const t = text.trim();
+  const m = REEL_URL_RE.exec(t);
+  if (m) return m[1];
+  if (/^[A-Za-z0-9_-]{11}$/.test(t) && /[A-Z]/.test(t)) return t;
+  return null;
+}
+
+export interface OwnerReelIndex {
+  /** shortcode -> views, for every reel the provider listed. */
+  views: Map<string, number>;
+  /** The newest reel in the list, which is how far forward the list reaches. */
+  newest: { shortcode: string; postedAt: Date | null } | null;
+  listed: number;
+}
+
+/**
+ * Every reel the provider will admit to for one account, keyed by shortcode.
+ *
+ * Deliberately NOT fetchAllStubs: that one drops pinned reels, which is right
+ * for an average (one pinned viral clip otherwise speaks for the account) and
+ * wrong here. A pasted URL is a reel someone named on purpose, and answering
+ * "not found" because it happens to be pinned would be a lie about the reel.
+ */
+export async function fetchOwnerReelIndex(
+  username: string,
+  maxReels = 36,
+): Promise<OwnerReelIndex> {
+  const views = new Map<string, number>();
+  let newest: { shortcode: string; postedAt: Date | null } | null = null;
+  let cursor: string | undefined;
+
+  while (views.size < maxReels) {
+    const body: Record<string, string> = { username_or_url: username };
+    if (cursor) body.pagination_token = cursor;
+    const data = (await apiPost("/get_ig_user_reels.php", body)) as Record<string, unknown>;
+    const reels = (data.reels as Array<Record<string, unknown>>) || [];
+    if (!reels.length) break;
+
+    for (const reel of reels) {
+      const m = (reel.node as Record<string, unknown>)?.media as Record<string, unknown>;
+      if (!m) continue;
+      const code = (m.code as string) || "";
+      if (!code) continue;
+      const seen = (m.play_count as number) || (m.view_count as number) || 0;
+      views.set(code, Math.max(views.get(code) ?? 0, seen));
+
+      // Newest by the date inside the id, not by arrival order. The list has
+      // been newest-first every time it was looked at, but an order that is
+      // only ever observed is not an order that is promised.
+      const postedAt = dateFromShortcode(code);
+      if (
+        !newest ||
+        (postedAt && (!newest.postedAt || postedAt > newest.postedAt))
+      ) {
+        newest = { shortcode: code, postedAt };
+      }
+    }
+
+    const token = (data.pagination_token as string) || "";
+    if (token.length <= 10) break;
+    cursor = token;
+    await new Promise((r) => setTimeout(r, RATE_DELAY));
+  }
+
+  return { views, newest, listed: views.size };
+}
+
+export type ReelProbe =
+  | { state: "ok"; views: number; username: string | null; postedAt: Date | null }
+  | { state: "missing"; reason: string }
+  | { state: "inconclusive"; reason: string };
+
+/**
+ * Views for one reel, asked directly.
+ *
+ * retries = 0 on purpose. While this endpoint is refusing everything, the
+ * 2-5-10-20-40s ladder would spend 77 seconds per reel to arrive at the same
+ * refusal - the exact cost that turned a views run into a wall of timeouts
+ * (see the breaker note above). One call, then the caller falls back to the
+ * owner's reel list.
+ *
+ * "missing" is reserved for a refusal that does NOT read as a failure to look.
+ * Today's answer says "try again later", which isTransientErrorField catches,
+ * so a dead endpoint can never be reported as a deleted reel.
+ */
+export async function probeReelViewsDirect(shortcode: string): Promise<ReelProbe> {
+  if (IG_PROVIDER === "mediacrawlers") {
+    return { state: "inconclusive", reason: "per-reel lookup not available on this provider" };
+  }
+  try {
+    const item = (await apiGet(
+      `/get_media_data_v2.php?media_code=${encodeURIComponent(shortcode)}`,
+      0,
+    )) as Record<string, unknown>;
+
+    const err = item.error;
+    if (typeof err === "string" && err) {
+      return isTransientErrorField(err)
+        ? { state: "inconclusive", reason: err }
+        : { state: "missing", reason: err };
+    }
+
+    const views =
+      typeof item.video_play_count === "number"
+        ? item.video_play_count
+        : typeof item.video_view_count === "number"
+          ? item.video_view_count
+          : null;
+    if (views === null) {
+      return { state: "inconclusive", reason: "answer carried no view count" };
+    }
+
+    const owner = item.owner as Record<string, unknown> | undefined;
+    const takenAt = item.taken_at_timestamp as number | undefined;
+    return {
+      state: "ok",
+      views,
+      username: (owner?.username as string) || null,
+      postedAt: takenAt ? new Date(takenAt * 1000) : dateFromShortcode(shortcode),
+    };
+  } catch (e) {
+    // Walls (403 / monthly quota) are remembered in the API layer by
+    // accessError/quotaError, so swallowing here cannot hide an outage: the
+    // run's own loop reads standingApiWall() and stops.
+    return {
+      state: "inconclusive",
+      reason: (e instanceof Error ? e.message : String(e)).slice(0, 160),
+    };
+  }
+}
+
 /**
  * Is this account gone, read WITHOUT the profile endpoint.
  *

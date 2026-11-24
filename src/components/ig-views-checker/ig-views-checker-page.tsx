@@ -47,6 +47,14 @@ interface ViewsCheckResult {
   videosCounted6?: number;
   bucket: ViewBucket;
   note?: string;
+  /**
+   * Set only on rows from reel mode. Its presence is what switches the column
+   * header from "Avg views" to "Views": the same cell holds a window average in
+   * one mode and one reel's count in the other, and a header that lied about
+   * which would be worse than no header at all.
+   */
+  shortcode?: string;
+  url?: string;
 }
 
 interface CheckProgress {
@@ -126,13 +134,32 @@ function SortMark({ active, dir }: { active: boolean; dir: "asc" | "desc" }) {
   );
 }
 
+/**
+ * A row's identity.
+ *
+ * In account mode the username is unique. In reel mode one account can own
+ * several pasted reels, and keying the table rows or the checkboxes on the
+ * username would make those rows the same row - tick one and they all tick,
+ * and React would warn about duplicate keys besides.
+ */
+function rowKey(r: ViewsCheckResult): string {
+  return r.shortcode ? `${r.username}/${r.shortcode}` : r.username;
+}
+
+type InputMode = "accounts" | "reels";
+
 export function IgViewsCheckerPage() {
   const [input, setInput] = useState("");
+  const [mode, setMode] = useState<InputMode>("accounts");
   const [progress, setProgress] = useState<CheckProgress | null>(null);
   const [filter, setFilter] = useState<FilterMode>("all");
   const [copied, setCopied] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("avg");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  // Lines that carried no reel URL, and the server's refusal if it refused.
+  // Both are things the user would otherwise only notice by counting rows.
+  const [skipped, setSkipped] = useState<string[]>([]);
+  const [startError, setStartError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Clicking the active column flips direction; a new column starts ascending,
@@ -173,21 +200,37 @@ export function IgViewsCheckerPage() {
   }, [progress?.running, pollProgress]);
 
   async function handleStart() {
+    setFilter("all");
+    clear();
+    setSkipped([]);
+    setStartError(null);
+
+    // Reel mode sends the lines as typed. Splitting them into words the way
+    // account mode does would throw away which username belongs to which URL,
+    // and that pairing IS the input: it is what lets the account's own reel
+    // list answer a reel the per-reel endpoint will not.
+    const lines = input.split(/\r?\n/).filter((l) => l.trim());
     const usernames = input
       .split(/[\n,\s]+/)
       .map((u) => u.trim().replace(/^@/, ""))
       .filter(Boolean);
-
-    if (!usernames.length) return;
-
-    setFilter("all");
-    clear();
+    if (!(mode === "reels" ? lines.length : usernames.length)) return;
+    const body = mode === "reels" ? { reelLines: lines } : { usernames };
 
     const res = await fetch("/api/ig-views-check", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ usernames }),
+      body: JSON.stringify(body),
     });
+
+    const answer = (await res.json().catch(() => null)) as
+      | { error?: string; skippedLines?: string[] }
+      | null;
+    if (answer?.skippedLines?.length) setSkipped(answer.skippedLines);
+    if (!res.ok) {
+      setStartError(answer?.error || `Could not start (HTTP ${res.status})`);
+      return;
+    }
 
     if (res.ok) {
       if (pollRef.current) clearInterval(pollRef.current);
@@ -217,6 +260,8 @@ export function IgViewsCheckerPage() {
   function handleClear() {
     setInput("");
     setProgress(null);
+    setSkipped([]);
+    setStartError(null);
     clear();
   }
 
@@ -256,18 +301,30 @@ export function IgViewsCheckerPage() {
   const filtered = filter === "all" ? sorted : sorted.filter((r) => r.bucket === filter);
 
   const { selected, toggle, clear, toggleAll, allSelected } = useRowSelection(
-    filtered.map((r) => r.username),
+    filtered.map(rowKey),
   );
+
+  // Whether what is on screen came from reel mode. Read off the rows, not off
+  // the toggle: the toggle can be flipped while last run's results are still
+  // on screen, and the header has to describe the rows it is sitting above.
+  const reelRows = results.some((r) => r.shortcode);
 
   function bucketCount(b: ViewBucket): number {
     return progress?.counts?.[b] ?? 0;
   }
 
-  const selectedUsernames = () =>
-    filtered.filter((r) => selected.has(r.username)).map((r) => r.username);
+  const selectedRows = () => filtered.filter((r) => selected.has(rowKey(r)));
+  const selectedUsernames = () => selectedRows().map((r) => r.username);
 
   function handleCopySelected() {
-    navigator.clipboard.writeText(selectedUsernames().join("\n"));
+    // Reel rows copy back out in the shape they were pasted in, so a line can
+    // go straight back into the box for a re-check later.
+    const text = reelRows
+      ? selectedRows()
+          .map((r) => `${r.username}\t${r.url ?? ""}`.trim())
+          .join("\n")
+      : selectedUsernames().join("\n");
+    navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
@@ -276,6 +333,12 @@ export function IgViewsCheckerPage() {
     // No confirmation and no warning: the browser's own pop-up prompt is
     // the only gate worth having, and a dialog on top of it just adds a
     // click to something meant to be one click.
+    if (reelRows) {
+      for (const row of selectedRows()) {
+        if (row.url) window.open(row.url, "_blank", "noopener,noreferrer");
+      }
+      return;
+    }
     openInstagramTabs(selectedUsernames());
   }
 
@@ -313,19 +376,58 @@ export function IgViewsCheckerPage() {
       <div>
         <h1 className="text-2xl font-bold">Views Checker</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Paste usernames to grade them by the average views of their last{" "}
-          {VIEWS_WINDOW} reels, pinned posts excluded — the same window the
-          tracker shows as &quot;Avg (last {VIEWS_WINDOW})&quot;. Accounts do not
-          need to be in the tracker; each one is scraped live. Click the Avg
-          views, Last {RECENT_WINDOW}, Videos or Bucket headers to sort.
+          {mode === "accounts" ? (
+            <>
+              Paste usernames to grade them by the average views of their last{" "}
+              {VIEWS_WINDOW} reels, pinned posts excluded — the same window the
+              tracker shows as &quot;Avg (last {VIEWS_WINDOW})&quot;. Accounts do
+              not need to be in the tracker; each one is scraped live. Click the
+              Avg views, Last {RECENT_WINDOW}, Videos or Bucket headers to sort.
+            </>
+          ) : (
+            <>
+              Paste one reel per line and get that reel&apos;s views — no
+              average, no window. Put the username on the line too (
+              <span className="font-mono">username&nbsp;&nbsp;URL</span>): one
+              call then answers every reel of the same account, and it is the
+              only route that works while the provider&apos;s per-reel endpoint
+              is refusing lookups. A reel posted in the last few hours may not
+              be in the provider&apos;s list yet; the row says so instead of
+              showing a zero.
+            </>
+          )}
         </p>
       </div>
 
       <div className="space-y-3">
+        {/* Two different questions, so two modes rather than one box that
+            guesses. Guessing from whether a line contains a URL would quietly
+            change what a number means. */}
+        <div className="inline-flex rounded-md border border-border p-0.5">
+          {(["accounts", "reels"] as InputMode[]).map((m) => (
+            <button
+              key={m}
+              type="button"
+              disabled={progress?.running}
+              onClick={() => setMode(m)}
+              className={`rounded px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
+                mode === m
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {m === "accounts" ? `Accounts · avg of last ${VIEWS_WINDOW}` : "Reel URLs · one reel each"}
+            </button>
+          ))}
+        </div>
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Paste usernames here, separated by spaces, commas, or new lines...&#10;&#10;example1&#10;example2&#10;example3"
+          placeholder={
+            mode === "accounts"
+              ? "Paste usernames here, separated by spaces, commas, or new lines...&#10;&#10;example1&#10;example2&#10;example3"
+              : "One reel per line, username first:&#10;&#10;example1  https://www.instagram.com/reel/ABCdefGHijk/&#10;example2  https://www.instagram.com/reel/LMNopQRstuv/"
+          }
           className="w-full h-40 rounded-md border border-border bg-background px-3 py-2 text-sm font-mono placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-y"
           disabled={progress?.running}
         />
@@ -353,12 +455,35 @@ export function IgViewsCheckerPage() {
             </Button>
           )}
           <span className="text-xs text-muted-foreground ml-auto">
-            {input.trim()
-              ? `${input.split(/[\n,\s]+/).filter((u) => u.trim()).length} usernames`
-              : ""}
+            {!input.trim()
+              ? ""
+              : mode === "reels"
+                ? `${input.split(/\r?\n/).filter((l) => l.trim()).length} lines`
+                : `${input.split(/[\n,\s]+/).filter((u) => u.trim()).length} usernames`}
           </span>
         </div>
       </div>
+
+      {startError && (
+        <div className="rounded-md border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+          {startError}
+        </div>
+      )}
+
+      {skipped.length > 0 && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-4 py-3 text-sm">
+          <span className="font-medium text-amber-400">
+            {skipped.length} line{skipped.length === 1 ? "" : "s"} had no reel URL
+          </span>{" "}
+          and {skipped.length === 1 ? "was" : "were"} not checked:
+          <ul className="mt-1 font-mono text-xs text-muted-foreground">
+            {skipped.slice(0, 8).map((l) => (
+              <li key={l}>{l}</li>
+            ))}
+            {skipped.length > 8 && <li>…and {skipped.length - 8} more</li>}
+          </ul>
+        </div>
+      )}
 
       {progress?.abortedReason && (
         <div className="rounded-md border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-400">
@@ -521,24 +646,21 @@ export function IgViewsCheckerPage() {
                     <label className="flex items-center justify-center cursor-pointer py-1 px-1">
                       <input
                         type="checkbox"
-                        checked={
-                          filtered.length > 0 &&
-                          filtered.every((r) => selected.has(r.username))
-                        }
+                        checked={allSelected}
                         onChange={toggleAll}
                         className="size-4 rounded border-border accent-primary cursor-pointer"
                       />
                     </label>
                   </TableHead>
                   <TableHead className="w-12">#</TableHead>
-                  <TableHead>Username</TableHead>
+                  <TableHead>{reelRows ? "Account · reel" : "Username"}</TableHead>
                   <TableHead className="text-right w-28">
                     <button
                       type="button"
                       onClick={() => toggleSort("avg")}
                       className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
                     >
-                      Avg views
+                      {reelRows ? "Views" : "Avg views"}
                       <SortMark active={sortKey === "avg"} dir={sortDir} />
                     </button>
                   </TableHead>
@@ -559,7 +681,7 @@ export function IgViewsCheckerPage() {
                       onClick={() => toggleSort("videos")}
                       className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
                     >
-                      Videos
+                      {reelRows ? "Reels" : "Videos"}
                       <SortMark active={sortKey === "videos"} dir={sortDir} />
                     </button>
                   </TableHead>
@@ -579,17 +701,18 @@ export function IgViewsCheckerPage() {
                 {filtered.map((result, idx) => {
                   const meta = BUCKET_META[result.bucket];
                   const Icon = meta.icon;
+                  const key = rowKey(result);
                   return (
-                    <TableRow key={result.username}>
+                    <TableRow key={key}>
                       <TableCell className="pl-4" onClick={(e) => e.stopPropagation()}>
                         <label className="flex items-center justify-center cursor-pointer py-2 px-1">
                           <input
                             type="checkbox"
-                            checked={selected.has(result.username)}
+                            checked={selected.has(key)}
                             // onClick, not onChange: only the click event
                             // carries shiftKey, which is what makes a range.
                             onChange={() => {}}
-                            onClick={(e) => toggle(result.username, idx, e.shiftKey)}
+                            onClick={(e) => toggle(key, idx, e.shiftKey)}
                             className="size-4 rounded border-border accent-primary cursor-pointer"
                           />
                         </label>
@@ -606,6 +729,20 @@ export function IgViewsCheckerPage() {
                         >
                           @{result.username}
                         </a>
+                        {result.url && (
+                          <>
+                            {" "}
+                            <a
+                              href={result.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="font-mono text-[11px] text-muted-foreground hover:underline"
+                              title={result.url}
+                            >
+                              /{result.shortcode}
+                            </a>
+                          </>
+                        )}
                         {result.note && (
                           <p className="text-[10px] text-muted-foreground mt-0.5">
                             {result.note}

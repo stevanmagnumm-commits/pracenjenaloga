@@ -6,6 +6,11 @@ import {
   standingApiWall,
   clearApiWall,
   dateFromMediaPk,
+  dateFromShortcode,
+  extractShortcode,
+  fetchOwnerReelIndex,
+  probeReelViewsDirect,
+  type OwnerReelIndex,
 } from "./instagram-api";
 import {
   VIEWS_WINDOW,
@@ -32,6 +37,22 @@ const RESULTS_FILE = "views-check-results.jsonl";
 interface SavedViewsWork {
   usernames: string[];
   startedAt: number;
+  /**
+   * Which kind of run this was. Absent on files written before reel mode
+   * existed, which is why the reader defaults to "accounts" - without that, a
+   * list of shortcodes left behind by an interrupted reel run would be resumed
+   * as a list of usernames and checked as 17 nonexistent accounts.
+   */
+  mode?: "accounts" | "reels";
+  reels?: ReelViewsJob[];
+}
+
+/** One pasted line, after parsing: the owner, the reel, and the URL as given. */
+export interface ReelViewsJob {
+  /** The username on the line. Empty when the line was a bare URL. */
+  label: string;
+  shortcode: string;
+  url: string;
 }
 
 export interface ResumableViewsCheck {
@@ -91,6 +112,13 @@ export interface ViewsCheckResult {
   bucket: ViewBucket;
   /** Present whenever the account could not be graded, explaining why. */
   note?: string;
+  /**
+   * Set only by reel mode: the one reel this row is about. Its presence is
+   * what tells a reader - and the table header - that `avgViews` is a single
+   * reel's view count and not an average over a window.
+   */
+  shortcode?: string;
+  url?: string;
 }
 
 export type CheckPhase = "idle" | "checking" | "confirming" | "done";
@@ -539,6 +567,331 @@ export async function runIgViewsCheck(usernames: string[]): Promise<void> {
   return runInLane("views", () => viewsRun(usernames));
 }
 
+/* ========================================================================== *
+ * Reel mode: one pasted URL, one row, one reel's views.
+ *
+ * Same screen, same lane, same wall and stop handling - a different question.
+ * "How is this account doing" is answered by an average over a window; "how
+ * did this post do" is answered by one number, and reading it off an average
+ * would be wrong twice over, because the reel may not even be inside the
+ * window the average is taken over.
+ *
+ * What it costs: the direct per-reel endpoint is one call per reel, and the
+ * fallback is one reel-list call per ACCOUNT no matter how many of its reels
+ * were pasted - which is why the jobs are grouped by owner before anything is
+ * fetched. Seventeen lines across seventeen accounts is seventeen calls either
+ * way; seventeen lines from one account is one.
+ * ========================================================================== */
+
+/**
+ * Pasted lines into jobs.
+ *
+ * Accepts "username  https://www.instagram.com/reel/CODE/", the URL alone, and
+ * the two in either order. The username is kept as the row's label and, more
+ * importantly, as the account whose reel list answers the line when the direct
+ * endpoint is down - so a line without one can only be answered the direct way.
+ */
+export function parseReelLines(lines: string[]): { jobs: ReelViewsJob[]; bad: string[] } {
+  const jobs: ReelViewsJob[] = [];
+  const bad: string[] = [];
+  const seen = new Set<string>();
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    const tokens = line.split(/[\s,]+/).filter(Boolean);
+    let shortcode: string | null = null;
+    let url = "";
+    let label = "";
+
+    for (const token of tokens) {
+      const code = extractShortcode(token);
+      if (code && !shortcode) {
+        shortcode = code;
+        url = /^https?:/i.test(token) ? token : `https://www.instagram.com/reel/${code}/`;
+      } else if (!label) {
+        label = token.replace(/^@/, "").toLowerCase();
+      }
+    }
+
+    if (!shortcode) {
+      bad.push(line.slice(0, 120));
+      continue;
+    }
+    // Keyed by reel, not by line: the same URL pasted twice is one reel, and
+    // paying for it twice would also put two rows on screen for one post.
+    if (seen.has(shortcode)) continue;
+    seen.add(shortcode);
+    jobs.push({ label, shortcode, url });
+  }
+
+  return { jobs, bad };
+}
+
+/** How long ago, in the roughest unit that still means something. */
+function ago(d: Date | null): string {
+  if (!d) return "an unknown time ago";
+  const mins = Math.round((Date.now() - d.getTime()) / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  if (mins < 60 * 48) return `${Math.round(mins / 60)}h ago`;
+  return `${Math.round(mins / 1440)}d ago`;
+}
+
+function reelRow(
+  job: ReelViewsJob,
+  views: number | null,
+  bucket: ViewBucket,
+  note?: string,
+): ViewsCheckResult {
+  return {
+    username: job.label || job.shortcode,
+    avgViews: views,
+    videosCounted: views === null ? 0 : 1,
+    // A single reel has no second window. Null rather than a copy of the same
+    // number, which would read as two independent measurements agreeing.
+    avgViews6: null,
+    videosCounted6: 0,
+    bucket,
+    note,
+    shortcode: job.shortcode,
+    url: job.url,
+  };
+}
+
+interface ReelGroup {
+  owner: string;
+  jobs: ReelViewsJob[];
+}
+
+export async function runIgReelViewsCheck(jobs: ReelViewsJob[]): Promise<void> {
+  return runInLane("views", () => reelRun(jobs));
+}
+
+async function reelRun(jobs: ReelViewsJob[]): Promise<void> {
+  if (progress.running) return;
+
+  await removeFiles(WORK_FILE, RESULTS_FILE);
+  await saveJson(WORK_FILE, {
+    usernames: [],
+    reels: jobs,
+    mode: "reels",
+    startedAt: Date.now(),
+  } satisfies SavedViewsWork);
+
+  await reelBatch(jobs, jobs.length, []);
+}
+
+function reelBatch(
+  jobs: ReelViewsJob[],
+  total: number,
+  already: ViewsCheckResult[],
+): Promise<void> {
+  return runInLane("views", () => reelBatchWork(jobs, total, already));
+}
+
+async function reelBatchWork(
+  jobs: ReelViewsJob[],
+  total: number,
+  already: ViewsCheckResult[],
+): Promise<void> {
+  if (!jobs.length) return;
+
+  const myToken = ++runToken;
+  quotaAbort = null;
+  clearApiWall();
+  const isActive = () => progress.running && runToken === myToken && !wallHit();
+
+  progress = freshProgress(total, true);
+  const log = new ResultLog<ViewsCheckResult>(RESULTS_FILE);
+
+  for (const r of already) {
+    progress.results.push(r);
+    if (r.bucket in progress.counts) progress.counts[r.bucket]++;
+  }
+  progress.completed = already.length;
+
+  const finalize = (result: ViewsCheckResult) => {
+    if (!isActive()) return;
+    progress.results.push(result);
+    progress.counts[result.bucket]++;
+    progress.completed++;
+    log.add(result);
+  };
+
+  try {
+    // One canary, not one probe per reel.
+    //
+    // The direct endpoint was refusing every code on 2026-11-24, and asking it
+    // once per reel would have spent a call per row to be told the same thing
+    // every time. One answer decides the route for the whole run, and it is
+    // not thrown away: if it works, it is this reel's number.
+    progress.current = jobs[0].shortcode;
+    const canary = await withDeadline(
+      probeReelViewsDirect(jobs[0].shortcode),
+      TRIAGE_DEADLINE,
+      () => ({ state: "inconclusive" as const, reason: "no answer in time" }),
+    );
+    const direct = canary.state === "ok";
+    console.log(
+      direct
+        ? "[ig-views-check] per-reel endpoint is answering - one call per reel"
+        : "[ig-views-check] per-reel endpoint not answering " +
+            `(${canary.reason.slice(0, 80)}) - reading each owner's reel list instead`,
+    );
+
+    const answeredByCanary = new Set<string>();
+    if (canary.state === "ok") {
+      finalize(
+        reelRow(jobs[0], canary.views, bucketForAvg(canary.views), `posted ${ago(canary.postedAt)}`),
+      );
+      answeredByCanary.add(jobs[0].shortcode);
+    }
+
+    const todo = jobs.filter((j) => !answeredByCanary.has(j.shortcode));
+
+    // Grouped by owner so one reel-list call answers every line of the same
+    // account. Lines with no username cannot be grouped at all, so each one
+    // stands alone - and on the fallback route it has nowhere to look.
+    const groups: ReelGroup[] = [];
+    const byOwner = new Map<string, ReelGroup>();
+    for (const job of todo) {
+      if (!job.label) {
+        groups.push({ owner: "", jobs: [job] });
+        continue;
+      }
+      const existing = byOwner.get(job.label);
+      if (existing) {
+        existing.jobs.push(job);
+      } else {
+        const group: ReelGroup = { owner: job.label, jobs: [job] };
+        byOwner.set(job.label, group);
+        groups.push(group);
+      }
+    }
+
+    await pool(groups, laneWorkers("views", CONCURRENCY), isActive, async (group) => {
+      progress.current = group.owner || group.jobs[0].shortcode;
+      const rows = direct
+        ? await gradeReelsDirect(group, isActive)
+        : await gradeReelsFromOwner(group);
+      for (const row of rows) finalize(row);
+    });
+  } catch (err) {
+    console.error("[ig-views-check] Reel batch error:", err);
+  } finally {
+    await log.flush();
+    if (runToken === myToken) {
+      progress.current = null;
+      progress.running = false;
+      progress.phase = "done";
+      progress.pending = 0;
+      progress.parked = [];
+      progress.abortedReason = quotaAbort;
+      if (progress.completed >= progress.total) {
+        await removeFiles(WORK_FILE, RESULTS_FILE);
+      }
+      const c = progress.counts;
+      console.log(
+        `[ig-views-check] Reels done. <100: ${c.under100}, 100-200: ${c.mid}, 200+: ${c.over200}, ` +
+          `unread: ${c.failed}`,
+      );
+    }
+  }
+}
+
+/** The direct route: one call per reel, each with its own deadline. */
+async function gradeReelsDirect(
+  group: ReelGroup,
+  isActive: () => boolean,
+): Promise<ViewsCheckResult[]> {
+  const rows: ViewsCheckResult[] = [];
+  for (const job of group.jobs) {
+    if (!isActive()) break;
+    const probe = await withDeadline(
+      probeReelViewsDirect(job.shortcode),
+      TRIAGE_DEADLINE,
+      () => ({ state: "inconclusive" as const, reason: `no answer within ${TRIAGE_DEADLINE / 1000}s` }),
+    );
+    if (probe.state === "ok") {
+      rows.push(
+        reelRow(job, probe.views, bucketForAvg(probe.views), `posted ${ago(probe.postedAt)}`),
+      );
+    } else if (probe.state === "missing") {
+      // The endpoint looked and found nothing, in wording that is not a
+      // complaint about looking. Still not called a ban: a reel can be deleted
+      // or hidden without anything happening to the account.
+      rows.push(reelRow(job, null, "failed", `reel gone - ${probe.reason.slice(0, 100)}`));
+    } else {
+      rows.push(reelRow(job, null, "failed", `could not read this reel: ${probe.reason.slice(0, 110)}`));
+    }
+  }
+  return rows;
+}
+
+/**
+ * The fallback route: the owner's reel list, matched by shortcode.
+ *
+ * A reel the list has not reached yet gets a row saying exactly that, with both
+ * ages in it - the reel's and the newest one the list does carry - because
+ * "not found" on its own invites the wrong conclusion. On 2026-11-24 every
+ * pasted reel was 1-3 hours old and every list stopped 8 hours back; the reels
+ * were fine, the list was behind.
+ */
+async function gradeReelsFromOwner(group: ReelGroup): Promise<ViewsCheckResult[]> {
+  if (!group.owner) {
+    return group.jobs.map((job) =>
+      reelRow(
+        job,
+        null,
+        "failed",
+        "no username on this line, and the provider's per-reel endpoint is down - " +
+          "paste it as \"username  URL\" and the account's reel list can answer it",
+      ),
+    );
+  }
+
+  let index: OwnerReelIndex | null = null;
+  let why = `no answer within ${TRIAGE_DEADLINE / 1000}s`;
+  try {
+    // Widened before the race so the expiry may answer null; narrowing it to
+    // OwnerReelIndex would make "no answer in time" unrepresentable.
+    const work: Promise<OwnerReelIndex | null> = fetchOwnerReelIndex(
+      group.owner,
+      VIEWS_WINDOW,
+    );
+    index = await withDeadline(work, TRIAGE_DEADLINE, () => null);
+  } catch (err) {
+    why = (err instanceof Error ? err.message : String(err)).slice(0, 140);
+  }
+
+  if (!index) {
+    return group.jobs.map((job) =>
+      reelRow(job, null, "failed", `could not read @${group.owner}'s reels: ${why}`),
+    );
+  }
+
+  const { views, newest, listed } = index;
+  return group.jobs.map((job) => {
+    const v = views.get(job.shortcode);
+    if (v !== undefined) {
+      return reelRow(job, v, bucketForAvg(v), `posted ${ago(dateFromShortcode(job.shortcode))}`);
+    }
+    if (listed === 0) {
+      return reelRow(job, null, "failed", `the API listed no reels at all for @${group.owner}`);
+    }
+    return reelRow(
+      job,
+      null,
+      "failed",
+      `not among the ${listed} reels the API lists for @${group.owner} - this reel was ` +
+        `posted ${ago(dateFromShortcode(job.shortcode))}, the newest one listed was posted ` +
+        `${ago(newest?.postedAt ?? null)}; the provider's list lags behind, so try again later`,
+    );
+  });
+}
+
 async function viewsRun(usernames: string[]): Promise<void> {
   if (progress.running) return;
 
@@ -674,11 +1027,14 @@ async function gradeBatchWork(
 export async function getResumableViewsCheck(): Promise<ResumableViewsCheck | null> {
   if (progress.running) return null;
   const saved = await loadJson<SavedViewsWork>(WORK_FILE);
-  if (!saved?.usernames?.length) return null;
+  if (!saved) return null;
+  const total =
+    saved.mode === "reels" ? saved.reels?.length ?? 0 : saved.usernames?.length ?? 0;
+  if (!total) return null;
   const done = await readLines<ViewsCheckResult>(RESULTS_FILE);
-  const remaining = saved.usernames.length - done.length;
+  const remaining = total - done.length;
   if (remaining <= 0) return null;
-  return { total: saved.usernames.length, done: done.length, remaining };
+  return { total, done: done.length, remaining };
 }
 
 /**
@@ -696,7 +1052,29 @@ async function viewsResume(): Promise<boolean> {
   if (progress.running) return false;
 
   const saved = await loadJson<SavedViewsWork>(WORK_FILE);
-  if (!saved?.usernames?.length) return false;
+  if (!saved) return false;
+
+  // A reel run resumes by reel. Answered rows are matched on the shortcode,
+  // not on the username, because reel mode puts the same username on as many
+  // rows as there were URLs for it - matching by name would drop the rest.
+  if (saved.mode === "reels") {
+    const reels = saved.reels ?? [];
+    if (!reels.length) return false;
+    const done = await readLines<ViewsCheckResult>(RESULTS_FILE);
+    const answered = new Set(done.map((r) => r.shortcode).filter(Boolean));
+    const remaining = reels.filter((j) => !answered.has(j.shortcode));
+    if (!remaining.length) {
+      await removeFiles(WORK_FILE, RESULTS_FILE);
+      return false;
+    }
+    console.log(
+      `[ig-views-check] Resuming reels: ${done.length} already read, ${remaining.length} to go`,
+    );
+    void reelBatch(remaining, reels.length, done);
+    return true;
+  }
+
+  if (!saved.usernames?.length) return false;
 
   const done = await readLines<ViewsCheckResult>(RESULTS_FILE);
   const answered = new Set(done.map((r) => r.username.toLowerCase()));

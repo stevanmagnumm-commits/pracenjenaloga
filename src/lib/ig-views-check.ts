@@ -9,7 +9,8 @@ import {
   dateFromShortcode,
   extractShortcode,
   fetchOwnerReelIndex,
-  probeReelViewsDirect,
+  probeReelViews,
+  PER_REEL_QUOTA_GONE,
   type OwnerReelIndex,
 } from "./instagram-api";
 import {
@@ -647,9 +648,11 @@ function reelRow(
   views: number | null,
   bucket: ViewBucket,
   note?: string,
+  /** The owner the lookup discovered, for a line that was a bare URL. */
+  owner?: string | null,
 ): ViewsCheckResult {
   return {
-    username: job.label || job.shortcode,
+    username: job.label || owner || job.shortcode,
     avgViews: views,
     videosCounted: views === null ? 0 : 1,
     // A single reel has no second window. Null rather than a copy of the same
@@ -724,42 +727,12 @@ async function reelBatchWork(
   };
 
   try {
-    // One canary, not one probe per reel.
-    //
-    // The direct endpoint was refusing every code on 2026-11-24, and asking it
-    // once per reel would have spent a call per row to be told the same thing
-    // every time. One answer decides the route for the whole run, and it is
-    // not thrown away: if it works, it is this reel's number.
-    progress.current = jobs[0].shortcode;
-    const canary = await withDeadline(
-      probeReelViewsDirect(jobs[0].shortcode),
-      TRIAGE_DEADLINE,
-      () => ({ state: "inconclusive" as const, reason: "no answer in time" }),
-    );
-    const direct = canary.state === "ok";
-    console.log(
-      direct
-        ? "[ig-views-check] per-reel endpoint is answering - one call per reel"
-        : "[ig-views-check] per-reel endpoint not answering " +
-            `(${canary.reason.slice(0, 80)}) - reading each owner's reel list instead`,
-    );
-
-    const answeredByCanary = new Set<string>();
-    if (canary.state === "ok") {
-      finalize(
-        reelRow(jobs[0], canary.views, bucketForAvg(canary.views), `posted ${ago(canary.postedAt)}`),
-      );
-      answeredByCanary.add(jobs[0].shortcode);
-    }
-
-    const todo = jobs.filter((j) => !answeredByCanary.has(j.shortcode));
-
     // Grouped by owner so one reel-list call answers every line of the same
     // account. Lines with no username cannot be grouped at all, so each one
-    // stands alone - and on the fallback route it has nowhere to look.
+    // stands alone and goes straight to the per-reel lookup.
     const groups: ReelGroup[] = [];
     const byOwner = new Map<string, ReelGroup>();
-    for (const job of todo) {
+    for (const job of jobs) {
       if (!job.label) {
         groups.push({ owner: "", jobs: [job] });
         continue;
@@ -776,9 +749,7 @@ async function reelBatchWork(
 
     await pool(groups, laneWorkers("views", CONCURRENCY), isActive, async (group) => {
       progress.current = group.owner || group.jobs[0].shortcode;
-      const rows = direct
-        ? await gradeReelsDirect(group, isActive)
-        : await gradeReelsFromOwner(group);
+      const rows = await gradeReelGroup(group, isActive);
       for (const row of rows) finalize(row);
     });
   } catch (err) {
@@ -804,96 +775,103 @@ async function reelBatchWork(
   }
 }
 
-/** The direct route: one call per reel, each with its own deadline. */
-async function gradeReelsDirect(
+/**
+ * One account's pasted reels.
+ *
+ * The account's own reel list is asked first: one call, and it answers every
+ * line of that account that it carries, on the plan with room to spare. Only
+ * what it cannot see is then bought one reel at a time from the per-reel
+ * provider - which is the fresh and the off-profile material, and exactly what
+ * that provider was brought in for.
+ *
+ * A line with no username skips straight to the per-reel lookup, because there
+ * is no list to ask. It comes back with the owner's name attached, so the row
+ * still says whose reel it was.
+ */
+async function gradeReelGroup(
   group: ReelGroup,
   isActive: () => boolean,
 ): Promise<ViewsCheckResult[]> {
+  let index: OwnerReelIndex | null = null;
+  let indexWhy = "";
+  if (group.owner) {
+    try {
+      // Widened before the race so the expiry may answer null; narrowing it to
+      // OwnerReelIndex would make "no answer in time" unrepresentable.
+      const work: Promise<OwnerReelIndex | null> = fetchOwnerReelIndex(
+        group.owner,
+        VIEWS_WINDOW,
+      );
+      index = await withDeadline(work, TRIAGE_DEADLINE, () => null);
+      if (!index) indexWhy = `no answer within ${TRIAGE_DEADLINE / 1000}s`;
+    } catch (err) {
+      indexWhy = (err instanceof Error ? err.message : String(err)).slice(0, 120);
+    }
+  }
+
   const rows: ViewsCheckResult[] = [];
   for (const job of group.jobs) {
     if (!isActive()) break;
-    const probe = await withDeadline(
-      probeReelViewsDirect(job.shortcode),
-      TRIAGE_DEADLINE,
-      () => ({ state: "inconclusive" as const, reason: `no answer within ${TRIAGE_DEADLINE / 1000}s` }),
-    );
+
+    const listed = index?.views.get(job.shortcode);
+    if (listed !== undefined) {
+      rows.push(
+        reelRow(job, listed, bucketForAvg(listed), `posted ${ago(dateFromShortcode(job.shortcode))}`),
+      );
+      continue;
+    }
+
+    const probe = await withDeadline(probeReelViews(job.shortcode), TRIAGE_DEADLINE, () => ({
+      state: "inconclusive" as const,
+      reason: `no answer within ${TRIAGE_DEADLINE / 1000}s`,
+    }));
+
     if (probe.state === "ok") {
       rows.push(
-        reelRow(job, probe.views, bucketForAvg(probe.views), `posted ${ago(probe.postedAt)}`),
+        reelRow(
+          job,
+          probe.views,
+          bucketForAvg(probe.views),
+          `posted ${ago(probe.postedAt)} - looked up on its own${
+            index ? ", not on the account's reel list" : ""
+          }`,
+          probe.username,
+        ),
       );
-    } else if (probe.state === "missing") {
-      // The endpoint looked and found nothing, in wording that is not a
-      // complaint about looking. Still not called a ban: a reel can be deleted
-      // or hidden without anything happening to the account.
-      rows.push(reelRow(job, null, "failed", `reel gone - ${probe.reason.slice(0, 100)}`));
-    } else {
-      rows.push(reelRow(job, null, "failed", `could not read this reel: ${probe.reason.slice(0, 110)}`));
+      continue;
     }
-  }
-  return rows;
-}
 
-/**
- * The fallback route: the owner's reel list, matched by shortcode.
- *
- * A reel the list has not reached yet gets a row saying exactly that, with both
- * ages in it - the reel's and the newest one the list does carry - because
- * "not found" on its own invites the wrong conclusion. On 2026-11-24 every
- * pasted reel was 1-3 hours old and every list stopped 8 hours back; the reels
- * were fine, the list was behind.
- */
-async function gradeReelsFromOwner(group: ReelGroup): Promise<ViewsCheckResult[]> {
-  if (!group.owner) {
-    return group.jobs.map((job) =>
+    if (probe.state === "missing") {
+      // The provider's own sentence, not a translation of it. And never a
+      // verdict on the account: a reel can go without anything happening to
+      // whoever posted it.
+      rows.push(reelRow(job, null, "failed", probe.reason.slice(0, 140)));
+      continue;
+    }
+
+    // A spent plan is not a hiccup. Stopping costs nothing and grinding on
+    // would write a wall of identical failures.
+    if (probe.reason.includes(PER_REEL_QUOTA_GONE) && !quotaAbort) {
+      quotaAbort =
+        "The per-reel API plan is spent - run stopped. The rows above are valid; " +
+        "the rest are simply unchecked.";
+      console.error("[ig-views-check] ABORT: " + quotaAbort);
+    }
+
+    rows.push(
       reelRow(
         job,
         null,
         "failed",
-        "no username on this line, and the provider's per-reel endpoint is down - " +
-          "paste it as \"username  URL\" and the account's reel list can answer it",
+        `could not read this reel: ${probe.reason.slice(0, 110)}` +
+          (indexWhy ? ` (the account's list failed too: ${indexWhy})` : ""),
       ),
     );
   }
 
-  let index: OwnerReelIndex | null = null;
-  let why = `no answer within ${TRIAGE_DEADLINE / 1000}s`;
-  try {
-    // Widened before the race so the expiry may answer null; narrowing it to
-    // OwnerReelIndex would make "no answer in time" unrepresentable.
-    const work: Promise<OwnerReelIndex | null> = fetchOwnerReelIndex(
-      group.owner,
-      VIEWS_WINDOW,
-    );
-    index = await withDeadline(work, TRIAGE_DEADLINE, () => null);
-  } catch (err) {
-    why = (err instanceof Error ? err.message : String(err)).slice(0, 140);
-  }
-
-  if (!index) {
-    return group.jobs.map((job) =>
-      reelRow(job, null, "failed", `could not read @${group.owner}'s reels: ${why}`),
-    );
-  }
-
-  const { views, newest, listed } = index;
-  return group.jobs.map((job) => {
-    const v = views.get(job.shortcode);
-    if (v !== undefined) {
-      return reelRow(job, v, bucketForAvg(v), `posted ${ago(dateFromShortcode(job.shortcode))}`);
-    }
-    if (listed === 0) {
-      return reelRow(job, null, "failed", `the API listed no reels at all for @${group.owner}`);
-    }
-    return reelRow(
-      job,
-      null,
-      "failed",
-      `not among the ${listed} reels the API lists for @${group.owner} - this reel was ` +
-        `posted ${ago(dateFromShortcode(job.shortcode))}, the newest one listed was posted ` +
-        `${ago(newest?.postedAt ?? null)}; the provider's list lags behind, so try again later`,
-    );
-  });
+  return rows;
 }
+
 
 async function viewsRun(usernames: string[]): Promise<void> {
   if (progress.running) return;

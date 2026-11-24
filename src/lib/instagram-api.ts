@@ -925,27 +925,25 @@ export async function fetchLatestStubs(username: string, maxStubs = 36): Promise
  * do" - and until now the only way to answer it was to grade the whole account
  * and read the number off a window the reel may not even be inside.
  *
- * There are two ways to the number and they are not equal, measured
- * 2026-11-24 on the live plan:
- *
- *   - get_media_data_v2.php?media_code=CODE is the direct way, one call per
- *     reel. On that date it answered {"error":"Media data not found. Try again
- *     later."} for EVERY code, including DgG_FlRKaj8, which the same key had
- *     just listed among the account's reels seconds earlier. The control is
- *     what makes that a statement about the endpoint rather than about the
- *     reel. Both spellings (v2 and the older get_media_data.php) answered
- *     identically, and a nonexistent endpoint answers something else entirely
- *     ("Endpoint ... does not exist"), so the route is live and its backend is
- *     not. Worth keeping and worth trying, because the day it answers again it
- *     is one call instead of three.
+ * Two routes, asked in this order, measured 2026-11-24 on the live plans:
  *
  *   - get_ig_user_reels.php lists an owner's reels WITH their view counts, so
- *     one call answers every pasted reel of the same account at once. Its
- *     weakness is freshness: on 2026-11-24 at 13:05 UTC, four accounts' lists
- *     all stopped at 04:20-05:10 UTC, so reels posted at 10:28-11:43 were
- *     nowhere in them. A reel this list has not reached yet has no view count
- *     here, and saying so is the only honest answer - a zero would read as a
- *     reel nobody watched.
+ *     ONE call answers every pasted reel of that account at once, on the plan
+ *     that allows a million a month. First for that reason alone.
+ *
+ *   - probeReelViews (instagram-looter2, further down) is a call per reel on a
+ *     smaller plan, and it sees what the list does not. Second for that
+ *     reason, and needed because the list has real holes, not just a lag.
+ *
+ * This provider's own per-reel endpoint is NOT one of the routes, and the
+ * measurement that ruled it out is worth keeping: get_media_data_v2.php
+ * answered {"error":"Media data not found. Try again later."} for EVERY code,
+ * including DgG_FlRKaj8, which the same key had just listed among the
+ * account's reels seconds earlier. The control is what makes that a statement
+ * about the endpoint rather than about the reel. Both spellings answered
+ * identically, and a nonexistent endpoint answers something else entirely
+ * ("Endpoint ... does not exist"), so the route is live and its backend is
+ * not. fetchMediaDetail below still calls it and still quietly gets null.
  * -------------------------------------------------------------------------- */
 
 const SHORTCODE_ALPHABET =
@@ -1069,64 +1067,196 @@ export type ReelProbe =
   | { state: "missing"; reason: string }
   | { state: "inconclusive"; reason: string };
 
-/**
- * Views for one reel, asked directly.
+/* -------------------------------------------------------------------------- *
+ * A second provider, for one named reel.
  *
- * retries = 0 on purpose. While this endpoint is refusing everything, the
- * 2-5-10-20-40s ladder would spend 77 seconds per reel to arrive at the same
- * refusal - the exact cost that turned a views run into a wall of timeouts
- * (see the breaker note above). One call, then the caller falls back to the
- * owner's reel list.
+ * Not a preference - a necessity, and the measurement that forced it is worth
+ * keeping. On 2026-11-24 seventeen freshly posted reels were pasted in. The
+ * main provider could not see a single one: its per-reel endpoint
+ * (get_media_data_v2.php) refused every code, including codes it had itself
+ * listed seconds earlier, and the owners' reel lists did not carry them
+ * either. The lists also hold interior gaps - fifteen hours between two posts
+ * on an account that posts every two to four - and a list that is merely
+ * behind cannot have a hole in its middle, so some reels are missing from
+ * that route for good, not late.
  *
- * "missing" is reserved for a refusal that does NOT read as a failure to look.
- * Today's answer says "try again later", which isTransientErrorField catches,
- * so a dead endpoint can never be reported as a deleted reel.
- */
-export async function probeReelViewsDirect(shortcode: string): Promise<ReelProbe> {
-  if (IG_PROVIDER === "mediacrawlers") {
-    return { state: "inconclusive", reason: "per-reel lookup not available on this provider" };
-  }
-  try {
-    const item = (await apiGet(
-      `/get_media_data_v2.php?media_code=${encodeURIComponent(shortcode)}`,
-      0,
-    )) as Record<string, unknown>;
+ * instagram-looter2 answered all three that were tried, by URL alone, with the
+ * owner's username and the posting time in the body. Its number agreed with
+ * the main provider's where both could see the same reel (500 against 496
+ * twenty minutes apart, which is the reel growing), so the two corroborate
+ * rather than merely differ.
+ *
+ * It is the SECOND choice all the same, and the order matters for the bill:
+ * one call to an owner's reel list answers every pasted reel of that account
+ * at once, on the plan with a million calls a month, while this one is a call
+ * per reel on a plan of 75,000. So the list is asked first and this is kept
+ * for what the list cannot see - which is exactly the fresh and the
+ * off-profile material it was brought in for.
+ *
+ * Its own key, host, quota and limiter: it must not spend the main plan's
+ * budget or appear in the main plan's usage counter.
+ * -------------------------------------------------------------------------- */
 
-    const err = item.error;
-    if (typeof err === "string" && err) {
-      return isTransientErrorField(err)
-        ? { state: "inconclusive", reason: err }
-        : { state: "missing", reason: err };
+const LOOTER_HOST = process.env.IG_LOOTER_HOST || "instagram-looter2.p.rapidapi.com";
+const LOOTER_KEY = process.env.IG_LOOTER_KEY || RAPIDAPI_KEY;
+const LOOTER_TIMEOUT_MS = Math.max(5_000, Number(process.env.IG_LOOTER_TIMEOUT_MS) || 25_000);
+// The plan states a monthly total and no per-second rate, so the ceiling here
+// is a guess made deliberately low. Measured 1.0-3.4s per call; eight in
+// flight is roughly three a second, which no sane provider minds.
+const LOOTER_CONCURRENCY = Math.max(1, Number(process.env.IG_LOOTER_CONCURRENCY) || 8);
+const LOOTER_RETRIES = 2;
+
+/** Said in a thrown or returned reason when the per-reel plan is spent. */
+export const PER_REEL_QUOTA_GONE = "PER_REEL_QUOTA_GONE";
+
+let perReelQuota: { remaining: number; limit: number } | null = null;
+
+/**
+ * What is left on the per-reel plan this month, as the provider last said it.
+ * Shown on screen: a budget that is only visible on the provider's website is
+ * a budget nobody notices until it is gone.
+ */
+export function getPerReelQuota(): { remaining: number; limit: number } | null {
+  return perReelQuota;
+}
+
+let looterInFlight = 0;
+const looterWaiting: (() => void)[] = [];
+
+async function looterSlot(): Promise<void> {
+  if (looterInFlight < LOOTER_CONCURRENCY) {
+    looterInFlight++;
+    return;
+  }
+  await new Promise<void>((resolve) => looterWaiting.push(resolve));
+}
+
+function releaseLooterSlot(): void {
+  // The slot is handed straight to whoever is waiting, so the count only drops
+  // when nobody is - otherwise two waiters could both see room and take it.
+  const next = looterWaiting.shift();
+  if (next) {
+    next();
+    return;
+  }
+  looterInFlight--;
+}
+
+type LooterOutcome =
+  | { ok: true; data: Record<string, unknown> }
+  | { ok: false; reason: string };
+
+async function looterGet(url: string): Promise<LooterOutcome> {
+  await looterSlot();
+  try {
+    const response = await fetch(
+      `https://${LOOTER_HOST}/post?url=${encodeURIComponent(url)}`,
+      {
+        headers: { "x-rapidapi-key": LOOTER_KEY, "x-rapidapi-host": LOOTER_HOST },
+        signal: AbortSignal.timeout(LOOTER_TIMEOUT_MS),
+      },
+    );
+
+    const limit = Number(response.headers.get("x-ratelimit-requests-limit"));
+    const remaining = Number(response.headers.get("x-ratelimit-requests-remaining"));
+    if (Number.isFinite(limit) && Number.isFinite(remaining) && limit > 0) {
+      perReelQuota = { remaining, limit };
+    }
+
+    const text = await response.text();
+    if (!response.ok) {
+      return { ok: false, reason: `HTTP ${response.status} ${text.slice(0, 120)}`.trim() };
+    }
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return { ok: false, reason: `unparseable body: ${text.slice(0, 100)}` };
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      return { ok: false, reason: `unexpected body: ${text.slice(0, 100)}` };
+    }
+    return { ok: true, data: data as Record<string, unknown> };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  } finally {
+    releaseLooterSlot();
+  }
+}
+
+/**
+ * Views for one reel, by its URL alone.
+ *
+ * Three answers, kept apart on purpose, the way every other checker here keeps
+ * them apart: a number, a post that is genuinely not there, and a lookup that
+ * failed. Only the middle one is a statement about the reel, and even that is
+ * never a statement about the account - a reel can be taken down without
+ * anything happening to whoever posted it.
+ *
+ * Measured shapes, 2026-11-24:
+ *   200 {"status":true, ...video_play_count...}          - the number
+ *   200 {"status":false,"errorMessage":"This post does not exist."}
+ *   500 with an empty body                               - malformed code
+ */
+export async function probeReelViews(shortcode: string): Promise<ReelProbe> {
+  const url = `https://www.instagram.com/reel/${shortcode}/`;
+  let last = "no attempt was made";
+
+  for (let attempt = 0; attempt <= LOOTER_RETRIES; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 1_500 * attempt));
+
+    const out = await looterGet(url);
+    if (!out.ok) {
+      if (MONTHLY_QUOTA_RE.test(out.reason) || /exceeded the (MONTHLY|rate) limit/i.test(out.reason)) {
+        return {
+          state: "inconclusive",
+          reason: `${PER_REEL_QUOTA_GONE}: the per-reel API plan is spent - ${out.reason.slice(0, 90)}`,
+        };
+      }
+      last = out.reason;
+      continue;
+    }
+
+    const data = out.data;
+    if (data.status === false) {
+      const said = String(data.errorMessage || data.message || "").trim();
+      // Absence wording that is not ALSO a complaint about looking. The same
+      // split as profileErrorFor: "try again later" inside a sentence about
+      // something not being found means the lookup failed, not the reel.
+      if (said && !NOT_A_VERDICT.test(said) && /does not exist|not found|removed|deleted|unavailable/i.test(said)) {
+        return { state: "missing", reason: said };
+      }
+      last = said || "the provider refused without saying why";
+      continue;
     }
 
     const views =
-      typeof item.video_play_count === "number"
-        ? item.video_play_count
-        : typeof item.video_view_count === "number"
-          ? item.video_view_count
+      typeof data.video_play_count === "number"
+        ? data.video_play_count
+        : typeof data.video_view_count === "number"
+          ? data.video_view_count
           : null;
     if (views === null) {
-      return { state: "inconclusive", reason: "answer carried no view count" };
+      if (data.is_video === false) {
+        return { state: "missing", reason: "this is a photo post, not a reel - it has no view count" };
+      }
+      last = "the answer carried no view count";
+      continue;
     }
 
-    const owner = item.owner as Record<string, unknown> | undefined;
-    const takenAt = item.taken_at_timestamp as number | undefined;
+    const owner = data.owner as Record<string, unknown> | undefined;
+    const takenAt = data.taken_at_timestamp as number | undefined;
     return {
       state: "ok",
       views,
       username: (owner?.username as string) || null,
       postedAt: takenAt ? new Date(takenAt * 1000) : dateFromShortcode(shortcode),
     };
-  } catch (e) {
-    // Walls (403 / monthly quota) are remembered in the API layer by
-    // accessError/quotaError, so swallowing here cannot hide an outage: the
-    // run's own loop reads standingApiWall() and stops.
-    return {
-      state: "inconclusive",
-      reason: (e instanceof Error ? e.message : String(e)).slice(0, 160),
-    };
   }
+
+  return { state: "inconclusive", reason: last.slice(0, 160) };
 }
+
 
 /**
  * Is this account gone, read WITHOUT the profile endpoint.

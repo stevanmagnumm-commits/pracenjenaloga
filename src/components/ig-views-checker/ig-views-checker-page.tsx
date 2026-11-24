@@ -70,6 +70,8 @@ interface CheckProgress {
   /** Set while idle when a restart left an unfinished list on disk. */
   resumable: { total: number; done: number; remaining: number } | null;
   rate: { used: number; limit: number };
+  /** Budget of the separate per-reel plan, once a reel lookup has used it. */
+  perReel?: { remaining: number; limit: number } | null;
   /**
    * Set when another tool owns the API budget and this one is on a share of
    * it. Shown on screen, because a trickle nobody explained reads as a freeze.
@@ -387,13 +389,12 @@ export function IgViewsCheckerPage() {
           ) : (
             <>
               Paste one reel per line and get that reel&apos;s views — no
-              average, no window. Put the username on the line too (
-              <span className="font-mono">username&nbsp;&nbsp;URL</span>): one
-              call then answers every reel of the same account, and it is the
-              only route that works while the provider&apos;s per-reel endpoint
-              is refusing lookups. A reel posted in the last few hours may not
-              be in the provider&apos;s list yet; the row says so instead of
-              showing a zero.
+              average, no window. A bare URL is enough. Adding the username (
+              <span className="font-mono">username&nbsp;&nbsp;URL</span>) is
+              cheaper though, not required: one call to that account&apos;s
+              reel list then answers every reel of theirs at once, and only
+              what the list cannot see is looked up one reel at a time on the
+              smaller per-reel plan.
             </>
           )}
         </p>
@@ -512,6 +513,17 @@ export function IgViewsCheckerPage() {
             Resume {progress.resumable.remaining.toLocaleString("en-US")} remaining
           </Button>
         </div>
+      )}
+
+      {reelRows && progress?.perReel && (
+        <p className="text-xs text-muted-foreground">
+          Per-reel lookups left this month:{" "}
+          <span className="font-medium text-foreground">
+            {progress.perReel.remaining.toLocaleString("en-US")}
+          </span>{" "}
+          of {progress.perReel.limit.toLocaleString("en-US")} — spent only on
+          reels the account&apos;s own list does not carry.
+        </p>
       )}
 
       {progress?.lane?.ceiling != null && (

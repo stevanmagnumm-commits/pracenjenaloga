@@ -9,6 +9,7 @@ import {
   parseReelLines,
 } from "@/lib/ig-views-check";
 import { getApiRateUsage, getLaneRateUsage } from "@/lib/rate-limit";
+import { getPerReelQuota } from "@/lib/instagram-api";
 import { laneStatus } from "@/lib/api-lanes";
 
 export const dynamic = "force-dynamic";
@@ -84,6 +85,9 @@ export async function GET() {
       ...getIgViewsCheckProgress(),
       resumable: await getResumableViewsCheck(),
       rate: getApiRateUsage(),
+      // The per-reel provider is a separate plan with a separate budget, and
+      // a budget nobody can see is a budget nobody notices until it is gone.
+      perReel: getPerReelQuota(),
       // A trickle has to be visible, or it reads as a freeze.
       lane: { ...getLaneRateUsage("views"), ...laneStatus("views") },
     },

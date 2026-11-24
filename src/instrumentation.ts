@@ -1,12 +1,14 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
     const cron = await import("node-cron");
-    const { ENABLE_SNAPCHAT } = await import("@/lib/modules");
+    const { ENABLE_SNAPCHAT_CRON } = await import("@/lib/modules");
     const { backupAllCreators } = await import("@/lib/creator-backup");
 
-    // Snapchat module is optional per deployment — skip all of its cron work
-    // (and the Telegram reports it sends) when disabled for this instance.
-    if (ENABLE_SNAPCHAT) {
+    // Snapchat module is optional per deployment, and its SCHEDULE can be
+    // stopped on its own — skip all of its cron work (and the Telegram reports
+    // it sends) when either is off for this instance. The page and the manual
+    // check are untouched by this.
+    if (ENABLE_SNAPCHAT_CRON) {
       const { runSnapchatCheck } = await import("@/lib/snapchat-scheduled-check");
 
       // Every 2 hours during active window: 10,12,14,16,18,20,22,0
@@ -54,7 +56,11 @@ export async function register() {
       } catch {}
     }, 5 * 60 * 1000);
 
-    console.log("[scheduler] Snapchat cron active: checks at 10,12,14,16,18,20,22,0 | pause 2-9 | morning report at 10:00");
+    console.log(
+      ENABLE_SNAPCHAT_CRON
+        ? "[scheduler] Snapchat cron active: checks at 10,12,14,16,18,20,22,0 | pause 2-9 | morning report at 10:00"
+        : "[scheduler] Snapchat cron OFF (SNAPCHAT_CRON=false) — page and manual check still work",
+    );
     console.log("[scheduler] Creator backup cron active: every hour @ :05");
   }
 }

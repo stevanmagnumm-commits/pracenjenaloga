@@ -15,6 +15,7 @@ import {
   Loader2,
   Play,
   Copy,
+  Link2,
   Check,
   Trash2,
   Square,
@@ -155,7 +156,10 @@ export function IgViewsCheckerPage() {
   const [mode, setMode] = useState<InputMode>("accounts");
   const [progress, setProgress] = useState<CheckProgress | null>(null);
   const [filter, setFilter] = useState<FilterMode>("all");
-  const [copied, setCopied] = useState(false);
+  // Which button was last pressed, not merely that something was: with two
+  // copy buttons side by side, a plain boolean would tick both at once and
+  // leave you unsure which one actually took.
+  const [copied, setCopied] = useState<"names" | "links" | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("avg");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   // Lines that carried no reel URL, and the server's refusal if it refused.
@@ -318,17 +322,25 @@ export function IgViewsCheckerPage() {
   const selectedRows = () => filtered.filter((r) => selected.has(rowKey(r)));
   const selectedUsernames = () => selectedRows().map((r) => r.username);
 
-  function handleCopySelected() {
-    // Reel rows copy back out in the shape they were pasted in, so a line can
-    // go straight back into the box for a re-check later.
-    const text = reelRows
-      ? selectedRows()
-          .map((r) => `${r.username}\t${r.url ?? ""}`.trim())
-          .join("\n")
-      : selectedUsernames().join("\n");
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  // Names and links are copied apart, because they are pasted into different
+  // places: a name list goes back into the accounts box or into a message,
+  // a link list goes into a browser or a report. Glued together with a tab,
+  // as they were, neither of those paste cleanly.
+  //
+  // Names are deduplicated - in reel mode several rows can be the same
+  // account, and the same username eight times is not a list anyone wants.
+  // Links are not: every row is a different reel.
+  const selectedNames = () =>
+    Array.from(new Set(selectedUsernames().filter(Boolean)));
+  const selectedLinks = () =>
+    selectedRows()
+      .map((r) => r.url)
+      .filter((u): u is string => Boolean(u));
+
+  function copyOut(lines: string[], which: "names" | "links") {
+    navigator.clipboard.writeText(lines.join("\n"));
+    setCopied(which);
+    setTimeout(() => setCopied(null), 2000);
   }
 
   function handleOpenSelected() {
@@ -343,6 +355,11 @@ export function IgViewsCheckerPage() {
     }
     openInstagramTabs(selectedUsernames());
   }
+
+  // Counted here rather than inside the label, so the button promises exactly
+  // the number of lines that will land on the clipboard.
+  const nameCount = selected.size > 0 ? selectedNames().length : 0;
+  const linkCount = selected.size > 0 ? selectedLinks().length : 0;
 
   const pct = progress?.total
     ? Math.round((progress.completed / progress.total) * 100)
@@ -602,15 +619,37 @@ export function IgViewsCheckerPage() {
 
             <div className="flex items-center gap-1 ml-auto">
               {selected.size > 0 && (
-                <Button variant="outline" size="sm" onClick={handleCopySelected}>
-                  {copied ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => copyOut(selectedNames(), "names")}
+                  title="Usernames only, one per line"
+                >
+                  {copied === "names" ? (
                     <Check className="mr-1.5 size-4 text-green-500" />
                   ) : (
                     <Copy className="mr-1.5 size-4" />
                   )}
-                  {copied
+                  {copied === "names"
                     ? "Copied!"
-                    : `Copy ${selected.size} username${selected.size === 1 ? "" : "s"}`}
+                    : `Copy ${nameCount} username${nameCount === 1 ? "" : "s"}`}
+                </Button>
+              )}
+              {reelRows && selected.size > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => copyOut(selectedLinks(), "links")}
+                  title="Reel links only, one per line"
+                >
+                  {copied === "links" ? (
+                    <Check className="mr-1.5 size-4 text-green-500" />
+                  ) : (
+                    <Link2 className="mr-1.5 size-4" />
+                  )}
+                  {copied === "links"
+                    ? "Copied!"
+                    : `Copy ${linkCount} link${linkCount === 1 ? "" : "s"}`}
                 </Button>
               )}
               {selected.size > 0 && (

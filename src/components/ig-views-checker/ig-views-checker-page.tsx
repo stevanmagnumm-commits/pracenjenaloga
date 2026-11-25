@@ -327,11 +327,10 @@ export function IgViewsCheckerPage() {
   // a link list goes into a browser or a report. Glued together with a tab,
   // as they were, neither of those paste cleanly.
   //
-  // Names are deduplicated - in reel mode several rows can be the same
-  // account, and the same username eight times is not a list anyone wants.
-  // Links are not: every row is a different reel.
-  const selectedNames = () =>
-    Array.from(new Set(selectedUsernames().filter(Boolean)));
+  // Both lists stay one line per selected row, repeats included. An account
+  // that appears three times in the selection comes out three times, so the
+  // two lists line up row for row and can be pasted side by side.
+  const selectedNames = () => selectedUsernames().filter(Boolean);
   const selectedLinks = () =>
     selectedRows()
       .map((r) => r.url)

@@ -22,35 +22,45 @@ import {
 /* ========================================================================== *
  * Trial reels against the account's own organic posts.
  *
- * The question this answers is not "how did this reel do" - the Views Checker
- * already answers that - but "did the trial reels do better or worse than what
- * this account normally pulls". A view count on its own cannot answer it: 900
- * views is good on an account that averages 300 and poor on one that averages
- * 3,000. So every trial reel is measured against the same account's last
- * ORGANIC_WINDOW organic reels, and the row carries the gap between the two as
- * a percentage.
+ * The question is not "how did this reel do" - the Views Checker answers that
+ * - but "did the trial reels do better or worse than what this account
+ * normally pulls". A view count alone cannot answer it: 900 views is good on
+ * an account that averages 300 and poor on one that averages 3,000. So every
+ * trial reel is measured against the same account's last ORGANIC_WINDOW
+ * organic reels, and the row carries the gap as a percentage.
+ *
+ * The account is read OFF THE REEL
+ * --------------------------------
+ * Nothing has to be typed but the URL. The per-reel answer carries the owner,
+ * so the account a reel belongs to is a fact the lookup returns rather than
+ * something the paste has to get right. A username typed in front of a URL is
+ * treated as a hint for where to look first, never as the answer: if the reel
+ * turns out to belong to someone else, the row is re-attributed to the owner
+ * the reel reports and the baseline is taken from THAT account. A typo in a
+ * pasted name used to mean a comparison against a stranger's numbers, silently.
  *
  * Why two providers, and which does what
  * --------------------------------------
- * Neither one can answer this alone, which is the whole reason this section
- * needed building rather than being a column on an existing screen.
+ * Neither one can answer this alone, which is why this is a section of its own
+ * rather than a column on an existing screen.
  *
  *   - The MAIN plan (get_ig_user_reels.php, a million calls a month) lists an
- *     account's reels with their view counts. ONE call per account gives the
- *     entire organic baseline. It cannot see trial reels: a trial reel is
- *     served to non-followers and does not sit on the profile, which is
- *     exactly why the earlier reel-mode work found seventeen pasted trial
- *     reels absent from every list while the same key listed their neighbours
- *     fine.
+ *     account's reels with their view counts. ONE call gives the entire
+ *     organic baseline. It cannot see trial reels: a trial reel is served to
+ *     non-followers and does not sit on the profile, which is exactly what the
+ *     earlier reel-mode work ran into when seventeen pasted trial reels were
+ *     absent from every list while their neighbours listed fine.
  *
  *   - INSTAGRAM-LOOTER2 (75,000 calls a month) reads any reel by URL, trial
- *     ones included, one call per reel. It cannot give a baseline: asking it
- *     for six organic reels would be six calls where the main plan spends one.
+ *     ones included, one call per reel, and names its owner. It cannot give a
+ *     baseline: six organic reels would be six calls where the main plan
+ *     spends one.
  *
- * So: one main-plan call per ACCOUNT for the baseline, one looter call per
- * TRIAL REEL. An account with four trial reels costs 1 + 4. And when a pasted
- * reel does turn up on the profile list after all, its number is taken from
- * there and no looter call is spent on it.
+ * So the normal cost of a trial reel is one call on each plan's side of the
+ * fence: one per ACCOUNT for the baseline, one per REEL for the reel. A pasted
+ * reel that does turn up on the profile list is free - its number is already
+ * in the baseline call - which is why a typed username is still worth
+ * accepting even though nothing needs it.
  *
  * Both numbers are the same measurement - play_count on the main plan,
  * video_play_count on looter2 - so the percentage is not comparing two
@@ -95,6 +105,9 @@ export type TrialPhase = "idle" | "resolving" | "comparing" | "done";
 
 export interface TrialCompareProgress {
   total: number;
+  /** Reels whose owner and view count are settled - the first pass. */
+  resolved: number;
+  /** Reels whose account has been graded - the second pass. */
   completed: number;
   current: string | null;
   phase: TrialPhase;
@@ -107,23 +120,23 @@ export interface TrialCompareProgress {
 }
 
 /**
- * How many accounts are worked at once.
+ * How many reels, then accounts, are worked at once.
  *
  * Six rather than the Views Checker's forty, because the shape of the work is
- * different: each account here fires one main-plan call and then a burst of
- * per-reel calls on a plan whose month is 75,000 rather than a million. Six
- * accounts of four reels each is twenty-four per-reel calls in flight, which
- * the looter semaphore (eight) then paces anyway.
+ * different: the per-reel plan's month is 75,000 rather than a million, and
+ * the looter semaphore (eight) paces it anyway.
  */
 const CONCURRENCY = 6;
 
-/** A hard ceiling on how long one account may hold a worker. Same reasoning as
- *  the Views Checker's: an un-cancellable hang must not freeze the whole run. */
-const ACCOUNT_DEADLINE = 180_000;
+/** A hard ceiling on how long one unit of work may hold a worker. Same
+ *  reasoning as the Views Checker's: an un-cancellable hang must not freeze
+ *  the whole run. */
+const DEADLINE = 180_000;
 
 function freshProgress(total: number, running: boolean): TrialCompareProgress {
   return {
     total,
+    resolved: 0,
     completed: 0,
     current: null,
     phase: running ? "resolving" : "idle",
@@ -171,6 +184,18 @@ function noteIfQuotaDead(err: unknown): void {
   const wall = apiWallReason(err);
   if (!wall) return;
   quotaAbort = wall;
+  console.error("[trial-compare] ABORT: " + quotaAbort);
+}
+
+/** A spent per-reel plan is not a hiccup: grinding on would write a wall of
+ *  identical failures and the plan is gone either way. */
+function noteIfPerReelSpent(probe: ReelProbe): void {
+  if (quotaAbort) return;
+  if (probe.state !== "inconclusive") return;
+  if (!probe.reason.includes(PER_REEL_QUOTA_GONE)) return;
+  quotaAbort =
+    "The per-reel API plan is spent - run stopped. Rows already finished are " +
+    "valid; the rest are simply unchecked.";
   console.error("[trial-compare] ABORT: " + quotaAbort);
 }
 
@@ -228,9 +253,13 @@ export function parseTrialLines(lines: string[]): {
   return parseReelLines(lines);
 }
 
-interface Group {
-  owner: string;
-  jobs: ReelViewsJob[];
+/** One reel after the first pass: whose it is, and what it pulled. */
+interface Measured {
+  job: ReelViewsJob;
+  /** The owner the REEL reports, or the typed hint when nothing could be read. */
+  owner: string | null;
+  views: number | null;
+  note: string;
 }
 
 export async function runTrialCompare(jobs: ReelViewsJob[]): Promise<void> {
@@ -244,79 +273,119 @@ async function trialRun(jobs: ReelViewsJob[]): Promise<void> {
   quotaAbort = null;
   clearApiWall();
   progress = freshProgress(jobs.length, true);
-  const isActive = () =>
-    progress.running && runToken === myToken && !wallHit();
+  const isActive = () => progress.running && runToken === myToken && !wallHit();
+
+  // One fetch per account however many times it is asked for, shared between
+  // workers as a promise rather than a result - two reels of the same account
+  // resolve at the same moment, and caching only the answer would let both
+  // start their own call before either finished.
+  const lists = new Map<string, Promise<Awaited<ReturnType<typeof fetchAllStubs>>>>();
+  const listFailed = new Map<string, string>();
+
+  function reelList(username: string) {
+    const have = lists.get(username);
+    if (have) return have;
+    const work = fetchAllStubs(username, ORGANIC_WINDOW * 2).catch((err) => {
+      noteIfQuotaDead(err);
+      listFailed.set(
+        username,
+        (err instanceof Error ? err.message : String(err)).slice(0, 120),
+      );
+      return [] as Awaited<ReturnType<typeof fetchAllStubs>>;
+    });
+    lists.set(username, work);
+    return work;
+  }
 
   try {
-    /* ---------------------------------------------------------------- *
-     * Phase 1: whose reel is this?
+    /* ------------------------------------------------------------------ *
+     * Pass 1: whose reel is this, and what did it pull.
      *
-     * A line pasted as a bare URL has no account on it, and without an
-     * account there is nothing to compare against - the baseline IS the
-     * account. The per-reel provider returns the owner along with the view
-     * count, so one call does both jobs and the answer is kept so the second
-     * phase does not buy it again.
-     * ---------------------------------------------------------------- */
-    const probed = new Map<string, ReelProbe>();
-    const anonymous = jobs.filter((j) => !j.label);
+     * A typed username is a hint about where to look first, nothing more.
+     * When it is right AND the reel is on that account's list, the number
+     * comes out of a call that had to be made anyway and the per-reel plan
+     * is not touched at all. Every other path asks the reel itself, which
+     * answers with the owner's name attached - so the account is read off
+     * the reel rather than off the paste.
+     * ------------------------------------------------------------------ */
+    const measured: Measured[] = [];
 
-    if (anonymous.length) {
-      progress.phase = "resolving";
-      await pool(anonymous, laneWorkers("views", CONCURRENCY), isActive, async (job) => {
-        progress.current = job.shortcode;
-        const probe = await withDeadline(
-          probeReelViews(job.shortcode),
-          ACCOUNT_DEADLINE,
-          () => ({
-            state: "inconclusive" as const,
-            reason: `no answer within ${ACCOUNT_DEADLINE / 1000}s`,
-          }),
-        );
-        probed.set(job.shortcode, probe);
-        if (probe.state === "ok" && probe.username) job.label = probe.username;
-        if (
-          probe.state === "inconclusive" &&
-          probe.reason.includes(PER_REEL_QUOTA_GONE) &&
-          !quotaAbort
-        ) {
-          quotaAbort =
-            "The per-reel API plan is spent - run stopped. Rows already " +
-            "finished are valid; the rest are simply unchecked.";
-          console.error("[trial-compare] ABORT: " + quotaAbort);
+    await pool(jobs, laneWorkers("views", CONCURRENCY), isActive, async (job) => {
+      progress.current = job.label || job.shortcode;
+
+      if (job.label) {
+        const stubs = await withDeadline(reelList(job.label), DEADLINE, () => []);
+        const listed = stubs.find((s) => s.shortcode === job.shortcode);
+        if (listed) {
+          // On that account's own list, so the typed name is confirmed by the
+          // thing itself - there is nothing left for a lookup to tell us.
+          measured.push({
+            job,
+            owner: job.label,
+            views: listed.viewCount,
+            note: "on the profile list - no per-reel call spent",
+          });
+          progress.resolved++;
+          return;
         }
+      }
+
+      const probe = await withDeadline(probeReelViews(job.shortcode), DEADLINE, () => ({
+        state: "inconclusive" as const,
+        reason: `no answer within ${DEADLINE / 1000}s`,
+      }));
+      noteIfPerReelSpent(probe);
+
+      if (probe.state === "ok") {
+        const owner = probe.username || job.label || null;
+        const moved =
+          job.label && probe.username && probe.username !== job.label
+            ? ` - pasted as @${job.label}, but the reel says it is @${probe.username}, so it is compared against @${probe.username}`
+            : "";
+        measured.push({
+          job,
+          owner,
+          views: probe.views,
+          note:
+            "read by URL - not on the profile list, which is what a trial reel looks like" +
+            moved,
+        });
+        progress.resolved++;
+        return;
+      }
+
+      // Unreadable. The typed name, if there was one, is all that is left to
+      // file it under; without one the row has no account at all and says so.
+      measured.push({
+        job,
+        owner: job.label || null,
+        views: null,
+        note: probe.reason.slice(0, 140),
       });
-    }
+      progress.resolved++;
+    });
 
     if (!isActive()) return;
 
-    /* ---------------------------------------------------------------- *
-     * Phase 2: one row per account.
+    /* ------------------------------------------------------------------ *
+     * Pass 2: one row per account.
      *
-     * Grouped by owner first, because the baseline costs one call per
-     * account however many of its reels were pasted - and because the
-     * average the user asked for is an average per account, not per line.
-     * ---------------------------------------------------------------- */
+     * Grouped by the owner the REEL reported, so several trial reels of the
+     * same account become one row with one average - and so a re-attributed
+     * reel lands with the account it actually belongs to.
+     * ------------------------------------------------------------------ */
     progress.phase = "comparing";
-    const groups: Group[] = [];
-    const byOwner = new Map<string, Group>();
-    const orphans: ReelViewsJob[] = [];
 
-    for (const job of jobs) {
-      if (!job.label) {
-        // Still nameless after phase 1: the provider could not say whose reel
-        // it is, so there is no account to compare it against. It gets a row
-        // of its own saying exactly that, rather than being dropped.
-        orphans.push(job);
+    const groups = new Map<string, Measured[]>();
+    const orphans: Measured[] = [];
+    for (const m of measured) {
+      if (!m.owner) {
+        orphans.push(m);
         continue;
       }
-      const existing = byOwner.get(job.label);
-      if (existing) {
-        existing.jobs.push(job);
-      } else {
-        const group: Group = { owner: job.label, jobs: [job] };
-        byOwner.set(job.label, group);
-        groups.push(group);
-      }
+      const have = groups.get(m.owner);
+      if (have) have.push(m);
+      else groups.set(m.owner, [m]);
     }
 
     const finalize = (row: TrialCompareResult, lines: number) => {
@@ -326,21 +395,25 @@ async function trialRun(jobs: ReelViewsJob[]): Promise<void> {
       progress.completed += lines;
     };
 
-    await pool(groups, laneWorkers("views", CONCURRENCY), isActive, async (group) => {
-      progress.current = group.owner;
-      const row = await withDeadline(
-        compareAccount(group, probed),
-        ACCOUNT_DEADLINE,
-        () => failedRow(group, `no answer within ${ACCOUNT_DEADLINE / 1000}s`),
-      );
-      finalize(row, group.jobs.length);
-    });
+    await pool(
+      [...groups.entries()],
+      laneWorkers("views", CONCURRENCY),
+      isActive,
+      async ([owner, reels]) => {
+        progress.current = owner;
+        const row = await withDeadline(
+          buildRow(owner, reels, reelList, listFailed),
+          DEADLINE,
+          () => failedRow(owner, reels, `no answer within ${DEADLINE / 1000}s`),
+        );
+        finalize(row, reels.length);
+      },
+    );
 
-    for (const job of orphans) {
-      const why = probed.get(job.shortcode);
+    for (const m of orphans) {
       finalize(
         {
-          username: job.shortcode,
+          username: m.job.shortcode,
           trialAvg: null,
           trialCount: 0,
           organicAvg: null,
@@ -348,15 +421,14 @@ async function trialRun(jobs: ReelViewsJob[]): Promise<void> {
           diffPct: null,
           bucket: "failed",
           note:
-            "no account on this line and the reel lookup could not say whose " +
-            `it is${why && why.state !== "ok" ? ` (${why.reason.slice(0, 90)})` : ""}` +
-            " - add the username in front of the URL and it can be compared",
+            "the reel could not be read, so there is no account to compare it " +
+            `against (${m.note})`,
           reels: [
             {
-              shortcode: job.shortcode,
-              url: job.url,
+              shortcode: m.job.shortcode,
+              url: m.job.url,
               views: null,
-              note: "owner unknown",
+              note: m.note,
             },
           ],
           organic: [],
@@ -382,9 +454,13 @@ async function trialRun(jobs: ReelViewsJob[]): Promise<void> {
   }
 }
 
-function failedRow(group: Group, why: string): TrialCompareResult {
+function failedRow(
+  owner: string,
+  reels: Measured[],
+  why: string,
+): TrialCompareResult {
   return {
-    username: group.owner,
+    username: owner,
     trialAvg: null,
     trialCount: 0,
     organicAvg: null,
@@ -392,9 +468,9 @@ function failedRow(group: Group, why: string): TrialCompareResult {
     diffPct: null,
     bucket: "failed",
     note: why,
-    reels: group.jobs.map((j) => ({
-      shortcode: j.shortcode,
-      url: j.url,
+    reels: reels.map((m) => ({
+      shortcode: m.job.shortcode,
+      url: m.job.url,
       views: null,
       note: why,
     })),
@@ -403,34 +479,23 @@ function failedRow(group: Group, why: string): TrialCompareResult {
 }
 
 /**
- * One account: its organic baseline, its trial reels, and the gap.
+ * One account's row: its baseline, its trial reels, and the gap.
  *
- * Order matters for cost. The profile list is fetched first and serves two
- * purposes at once - it is the baseline, and it is also a free answer for any
- * pasted reel that happens to be on it. Only what is left over is bought from
- * the per-reel provider.
+ * The baseline call is usually already in flight or finished by now - pass 1
+ * asked for it for any line that carried a username - so this is free for
+ * those and one call for an account that was discovered from a bare URL.
  */
-async function compareAccount(
-  group: Group,
-  probed: Map<string, ReelProbe>,
+async function buildRow(
+  owner: string,
+  reels: Measured[],
+  reelList: (u: string) => Promise<Awaited<ReturnType<typeof fetchAllStubs>>>,
+  listFailed: Map<string, string>,
 ): Promise<TrialCompareResult> {
-  const trialCodes = new Set(group.jobs.map((j) => j.shortcode));
+  const trialCodes = new Set(reels.map((m) => m.job.shortcode));
+  const stubs = await reelList(owner);
+  const listWhy = listFailed.get(owner) || "";
 
-  // Twice the window, one page, one call: pinned reels are dropped by
-  // fetchAllStubs and a pasted reel may occupy a slot too, so asking for
-  // exactly six would sometimes come back with four.
-  let stubs: Awaited<ReturnType<typeof fetchAllStubs>> = [];
-  let listWhy = "";
-  try {
-    stubs = await fetchAllStubs(group.owner, ORGANIC_WINDOW * 2);
-  } catch (err) {
-    noteIfQuotaDead(err);
-    listWhy = (err instanceof Error ? err.message : String(err)).slice(0, 120);
-  }
-
-  const stubViews = new Map(stubs.map((s) => [s.shortcode, s.viewCount]));
-
-  // The baseline is the account's own recent posts, with anything pasted as a
+  // The baseline is the account's own recent posts with anything pasted as a
   // trial reel taken out of it. Trial reels are normally absent from the list
   // anyway; when one is not, counting it on both sides would quietly drag the
   // comparison toward zero.
@@ -440,60 +505,17 @@ async function compareAccount(
     .slice(0, ORGANIC_WINDOW)
     .map((s) => ({ shortcode: s.shortcode, views: s.viewCount }));
 
-  const reels: TrialReelRow[] = [];
-  for (const job of group.jobs) {
-    const listed = stubViews.get(job.shortcode);
-    if (listed !== undefined) {
-      reels.push({
-        shortcode: job.shortcode,
-        url: job.url,
-        views: listed,
-        note: "on the profile list - no per-reel call spent",
-      });
-      continue;
-    }
-
-    const probe =
-      probed.get(job.shortcode) ??
-      (await withDeadline(probeReelViews(job.shortcode), ACCOUNT_DEADLINE, () => ({
-        state: "inconclusive" as const,
-        reason: `no answer within ${ACCOUNT_DEADLINE / 1000}s`,
-      })));
-    probed.set(job.shortcode, probe);
-
-    if (probe.state === "ok") {
-      reels.push({
-        shortcode: job.shortcode,
-        url: job.url,
-        views: probe.views,
-        note: "read by URL - not on the profile list, which is what a trial reel looks like",
-      });
-      continue;
-    }
-
-    if (
-      probe.state === "inconclusive" &&
-      probe.reason.includes(PER_REEL_QUOTA_GONE) &&
-      !quotaAbort
-    ) {
-      quotaAbort =
-        "The per-reel API plan is spent - run stopped. Rows already finished " +
-        "are valid; the rest are simply unchecked.";
-      console.error("[trial-compare] ABORT: " + quotaAbort);
-    }
-
-    reels.push({
-      shortcode: job.shortcode,
-      url: job.url,
-      views: null,
-      note: probe.reason.slice(0, 140),
-    });
-  }
+  const rows: TrialReelRow[] = reels.map((m) => ({
+    shortcode: m.job.shortcode,
+    url: m.job.url,
+    views: m.views,
+    note: m.note,
+  }));
 
   const trialAvg = mean(
-    reels.map((r) => r.views).filter((v): v is number => v !== null),
+    rows.map((r) => r.views).filter((v): v is number => v !== null),
   );
-  const trialCount = reels.filter((r) => r.views !== null).length;
+  const trialCount = rows.filter((r) => r.views !== null).length;
   const organicAvg = mean(organic.map((o) => o.views));
   const diffPct = diffPercent(trialAvg, organicAvg);
 
@@ -513,7 +535,7 @@ async function compareAccount(
   }
 
   return {
-    username: group.owner,
+    username: owner,
     trialAvg,
     trialCount,
     organicAvg,
@@ -521,7 +543,7 @@ async function compareAccount(
     diffPct,
     bucket: bucketForDiff(diffPct),
     note,
-    reels,
+    reels: rows,
     organic,
   };
 }

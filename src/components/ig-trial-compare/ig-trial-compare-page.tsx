@@ -64,6 +64,8 @@ interface TrialCompareResult {
 
 interface Progress {
   total: number;
+  /** Reels whose owner and view count are settled — the first pass. */
+  resolved: number;
   completed: number;
   current: string | null;
   phase: "idle" | "resolving" | "comparing" | "done";
@@ -253,8 +255,13 @@ export function IgTrialComparePage() {
     clear();
   }
 
+  // Both passes, half the bar each. Tracking only the second one left the bar
+  // at zero through the whole of the first, which on a long paste is most of
+  // the run and reads as a freeze.
   const pct = progress?.total
-    ? Math.round((progress.completed / progress.total) * 100)
+    ? Math.round(
+        ((progress.resolved + progress.completed) / (progress.total * 2)) * 100,
+      )
     : 0;
 
   const lineCount = input.split(/\r?\n/).filter((l) => l.trim()).length;
@@ -264,15 +271,15 @@ export function IgTrialComparePage() {
       <div>
         <h1 className="text-2xl font-bold">Trial vs Organic</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Paste trial reels and see how they did against the same
-          account&apos;s own recent organic posts. Each row is one account: the
-          average of its trial reels, the average of its last {ORGANIC_WINDOW}{" "}
-          organic reels (pinned excluded, and any pasted reel taken out of the
-          baseline), and the gap between them in percent.{" "}
-          <span className="font-mono">username&nbsp;&nbsp;URL</span> per line —
-          a bare URL works too, it just costs one extra lookup to find out whose
-          reel it is. Several trial reels from the same account are averaged
-          into one row.
+          Paste trial reel links, one per line — nothing else. The account is
+          read off the reel itself, so no username has to be typed and a typo
+          cannot send the comparison to the wrong profile. Each row is one
+          account: the average of its trial reels, the average of its last{" "}
+          {ORGANIC_WINDOW} organic reels (pinned excluded, and any pasted reel
+          taken out of the baseline), and the gap between them in percent.
+          Several trial reels of the same account are averaged into one row.
+          You may still put a username in front of a URL — it is used as a hint
+          for where to look first, and the reel always has the last word.
         </p>
       </div>
 
@@ -284,10 +291,10 @@ export function IgTrialComparePage() {
           // works in JSX text - inside a string expression it reaches the
           // browser as the five characters you are reading.
           placeholder={
-            "One trial reel per line, username first:\n\n" +
-            "example1  https://www.instagram.com/reel/ABCdefGHijk/\n" +
-            "example1  https://www.instagram.com/reel/LMNopQRstuv/\n" +
-            "example2  https://www.instagram.com/reel/WXYz01234ab/"
+            "One trial reel link per line:\n\n" +
+            "https://www.instagram.com/reel/ABCdefGHijk/\n" +
+            "https://www.instagram.com/reel/LMNopQRstuv/\n" +
+            "https://www.instagram.com/reel/WXYz01234ab/"
           }
           className="w-full h-40 rounded-md border border-border bg-background px-3 py-2 text-sm font-mono placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-y"
           disabled={progress?.running}
@@ -300,7 +307,7 @@ export function IgTrialComparePage() {
               <Play className="mr-1.5 size-4" />
             )}
             {progress?.running
-              ? `Comparing ${progress.completed}/${progress.total}...`
+              ? `Working ${progress.resolved + progress.completed}/${progress.total * 2}...`
               : "Compare"}
           </Button>
           {progress?.running && (
@@ -356,8 +363,9 @@ export function IgTrialComparePage() {
             {progress.perReel.remaining.toLocaleString("en-US")}
           </span>{" "}
           of {progress.perReel.limit.toLocaleString("en-US")} — one per trial
-          reel. The organic baseline comes off the other plan and costs one call
-          per account.
+          reel, since a trial reel is not on the profile and only this plan can
+          read it. The organic baseline comes off the other plan and costs one
+          call per account however many of its reels you paste.
         </p>
       )}
 
@@ -366,13 +374,16 @@ export function IgTrialComparePage() {
           <div className="flex items-center justify-between text-sm">
             <span className="text-muted-foreground">
               {progress.phase === "resolving"
-                ? "Finding out whose reels these are…"
+                ? `Reading the reels and who they belong to — ${progress.resolved}/${progress.total}`
                 : progress.current
                   ? `Comparing @${progress.current}…`
                   : "Working…"}
             </span>
             <span className="text-muted-foreground">
-              {progress.completed}/{progress.total} ({pct}%)
+              {progress.phase === "resolving"
+                ? `${progress.resolved}/${progress.total} reels`
+                : `${progress.completed}/${progress.total} reels compared`}{" "}
+              ({pct}%)
             </span>
           </div>
           <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">

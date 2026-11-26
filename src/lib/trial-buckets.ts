@@ -27,6 +27,23 @@ export const ORGANIC_WINDOW = 6;
 export const TRIAL_SAME_BAND = 20;
 
 /**
+ * How old an account's reel list may be before it is fetched again.
+ *
+ * Twenty-four hours, and the number is a judgement about the baseline rather
+ * than about caching in general. The baseline is a six-reel average over
+ * accounts that post a few times a day, so a day-old one is built from mostly
+ * the same posts; what moves inside a day is the view count of the newest
+ * reel, which is the one least settled anyway. Against that, a Views Checker
+ * run over three hundred accounts has already bought every one of these lists,
+ * and buying them again an hour later is three hundred calls for an answer
+ * already on disk.
+ *
+ * It is a ceiling, not a promise: every row says where its baseline came from
+ * and how old it is, and the screen has a switch to ignore this entirely.
+ */
+export const ORGANIC_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
  * Three outcomes plus one reason there is no outcome.
  *
  *   worse   - the trial reels averaged clearly below the organic baseline

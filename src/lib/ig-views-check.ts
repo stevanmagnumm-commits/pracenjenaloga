@@ -22,6 +22,7 @@ import {
   type ViewBucket,
 } from "./view-buckets";
 import { runInLane, laneWorkers } from "./api-lanes";
+import { rememberOrganic } from "./organic-cache";
 
 import {
   saveJson,
@@ -419,10 +420,20 @@ async function gradeAlive(
       // newest first every time, but an order that is only ever observed is not
       // an order that is promised, and the wrong six would read as a real
       // number rather than as a mistake.
-      const recent = [...stubs]
-        .sort((a, b) => pkTime(b.igMediaId) - pkTime(a.igMediaId))
-        .slice(0, RECENT_WINDOW);
+      const newest = [...stubs].sort(
+        (a, b) => pkTime(b.igMediaId) - pkTime(a.igMediaId),
+      );
+      const recent = newest.slice(0, RECENT_WINDOW);
       const recentTotal = recent.reduce((sum, s) => sum + s.viewCount, 0);
+
+      // Handed to whoever needs the same list later - Trial vs Organic takes
+      // its baseline from here rather than buying the identical call again.
+      // Not awaited: this account's grade must not wait on a disk write, and
+      // a cache that fails to save costs one call next time and nothing else.
+      void rememberOrganic(
+        username,
+        newest.map((s) => ({ shortcode: s.shortcode, views: s.viewCount })),
+      );
       return {
         username,
         avgViews,

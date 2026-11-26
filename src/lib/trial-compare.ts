@@ -9,9 +9,15 @@ import {
   type ReelProbe,
 } from "./instagram-api";
 import { parseReelLines, type ReelViewsJob } from "./ig-views-check";
+import {
+  recallOrganic,
+  rememberOrganic,
+  type OrganicReel,
+} from "./organic-cache";
 import { runInLane, laneWorkers } from "./api-lanes";
 import {
   ORGANIC_WINDOW,
+  ORGANIC_TTL_MS,
   bucketForDiff,
   diffPercent,
   emptyTrialCounts,
@@ -99,6 +105,16 @@ export interface TrialCompareResult {
   note?: string;
   reels: TrialReelRow[];
   organic: OrganicReelRow[];
+  /**
+   * When the baseline was fetched, and whether this run fetched it.
+   *
+   * On screen rather than implied: a comparison against yesterday's numbers is
+   * a different statement from a comparison against this minute's, and which
+   * one you are reading must not depend on remembering whether the Views
+   * Checker happened to run earlier.
+   */
+  baselineAt: number | null;
+  baselineReused: boolean;
 }
 
 export type TrialPhase = "idle" | "resolving" | "comparing" | "done";
@@ -262,11 +278,19 @@ interface Measured {
   note: string;
 }
 
-export async function runTrialCompare(jobs: ReelViewsJob[]): Promise<void> {
-  return runInLane("views", () => trialRun(jobs));
+/**
+ * @param fresh Ignore the cache and fetch every baseline again. The default is
+ *   to reuse anything newer than ORGANIC_TTL_MS, which is almost always what
+ *   is wanted; this is the escape hatch for when it is not.
+ */
+export async function runTrialCompare(
+  jobs: ReelViewsJob[],
+  fresh = false,
+): Promise<void> {
+  return runInLane("views", () => trialRun(jobs, fresh));
 }
 
-async function trialRun(jobs: ReelViewsJob[]): Promise<void> {
+async function trialRun(jobs: ReelViewsJob[], fresh: boolean): Promise<void> {
   if (progress.running) return;
 
   const myToken = ++runToken;
@@ -275,25 +299,17 @@ async function trialRun(jobs: ReelViewsJob[]): Promise<void> {
   progress = freshProgress(jobs.length, true);
   const isActive = () => progress.running && runToken === myToken && !wallHit();
 
-  // One fetch per account however many times it is asked for, shared between
+  // One lookup per account however many times it is asked for, shared between
   // workers as a promise rather than a result - two reels of the same account
   // resolve at the same moment, and caching only the answer would let both
   // start their own call before either finished.
-  const lists = new Map<string, Promise<Awaited<ReturnType<typeof fetchAllStubs>>>>();
-  const listFailed = new Map<string, string>();
+  const baselines = new Map<string, Promise<Baseline>>();
 
-  function reelList(username: string) {
-    const have = lists.get(username);
+  function baselineFor(username: string): Promise<Baseline> {
+    const have = baselines.get(username);
     if (have) return have;
-    const work = fetchAllStubs(username, ORGANIC_WINDOW * 2).catch((err) => {
-      noteIfQuotaDead(err);
-      listFailed.set(
-        username,
-        (err instanceof Error ? err.message : String(err)).slice(0, 120),
-      );
-      return [] as Awaited<ReturnType<typeof fetchAllStubs>>;
-    });
-    lists.set(username, work);
+    const work = fetchBaseline(username, fresh);
+    baselines.set(username, work);
     return work;
   }
 
@@ -314,16 +330,20 @@ async function trialRun(jobs: ReelViewsJob[]): Promise<void> {
       progress.current = job.label || job.shortcode;
 
       if (job.label) {
-        const stubs = await withDeadline(reelList(job.label), DEADLINE, () => []);
-        const listed = stubs.find((s) => s.shortcode === job.shortcode);
+        const base = await withDeadline(baselineFor(job.label), DEADLINE, () =>
+          emptyBaseline("no answer in time"),
+        );
+        const listed = base.reels.find((r) => r.shortcode === job.shortcode);
         if (listed) {
           // On that account's own list, so the typed name is confirmed by the
           // thing itself - there is nothing left for a lookup to tell us.
           measured.push({
             job,
             owner: job.label,
-            views: listed.viewCount,
-            note: "on the profile list - no per-reel call spent",
+            views: listed.views,
+            note:
+              "on the profile list - no per-reel call spent" +
+              (base.reused ? ", read from the saved list" : ""),
           });
           progress.resolved++;
           return;
@@ -402,7 +422,7 @@ async function trialRun(jobs: ReelViewsJob[]): Promise<void> {
       async ([owner, reels]) => {
         progress.current = owner;
         const row = await withDeadline(
-          buildRow(owner, reels, reelList, listFailed),
+          buildRow(owner, reels, baselineFor),
           DEADLINE,
           () => failedRow(owner, reels, `no answer within ${DEADLINE / 1000}s`),
         );
@@ -432,6 +452,8 @@ async function trialRun(jobs: ReelViewsJob[]): Promise<void> {
             },
           ],
           organic: [],
+          baselineAt: null,
+          baselineReused: false,
         },
         1,
       );
@@ -475,7 +497,60 @@ function failedRow(
       note: why,
     })),
     organic: [],
+    baselineAt: null,
+    baselineReused: false,
   };
+}
+
+/* -------------------------------------------------------------------------- *
+ * The baseline, from the saved list when it is recent enough.
+ *
+ * Both tools that fetch an account's reels put them in organic-cache.ts, so a
+ * Views Checker run over a list of accounts has already bought every baseline
+ * a paste of their trial reels will ask for. Within ORGANIC_TTL_MS that answer
+ * is reused; past it, or when the run was asked for fresh numbers, the call is
+ * made and the result goes back into the cache for the next reader.
+ *
+ * Every row carries where its own baseline came from, so this never changes
+ * what a number means without saying so.
+ * -------------------------------------------------------------------------- */
+
+interface Baseline {
+  reels: OrganicReel[];
+  /** When the list was fetched, in epoch ms, or null when it never was. */
+  at: number | null;
+  /** True when this run did not pay for it. */
+  reused: boolean;
+  /** Why there is nothing here, when there is nothing. */
+  why: string;
+}
+
+function emptyBaseline(why: string): Baseline {
+  return { reels: [], at: null, reused: false, why };
+}
+
+async function fetchBaseline(username: string, fresh: boolean): Promise<Baseline> {
+  if (!fresh) {
+    const hit = await recallOrganic(username, ORGANIC_TTL_MS);
+    if (hit) return { reels: hit.reels, at: hit.at, reused: true, why: "" };
+  }
+
+  try {
+    const stubs = await fetchAllStubs(username, ORGANIC_WINDOW * 2);
+    // Sorted here, before it is cached, so the saved list and a freshly
+    // fetched one are in the same order and a cached run cannot quietly
+    // produce a different six than an uncached one.
+    const reels: OrganicReel[] = [...stubs]
+      .sort((a, b) => newestFirst(a.shortcode, b.shortcode))
+      .map((s) => ({ shortcode: s.shortcode, views: s.viewCount }));
+    if (reels.length) void rememberOrganic(username, reels);
+    return { reels, at: Date.now(), reused: false, why: "" };
+  } catch (err) {
+    noteIfQuotaDead(err);
+    return emptyBaseline(
+      (err instanceof Error ? err.message : String(err)).slice(0, 120),
+    );
+  }
 }
 
 /**
@@ -488,22 +563,19 @@ function failedRow(
 async function buildRow(
   owner: string,
   reels: Measured[],
-  reelList: (u: string) => Promise<Awaited<ReturnType<typeof fetchAllStubs>>>,
-  listFailed: Map<string, string>,
+  baselineFor: (u: string) => Promise<Baseline>,
 ): Promise<TrialCompareResult> {
   const trialCodes = new Set(reels.map((m) => m.job.shortcode));
-  const stubs = await reelList(owner);
-  const listWhy = listFailed.get(owner) || "";
+  const base = await baselineFor(owner);
+  const listWhy = base.why;
 
   // The baseline is the account's own recent posts with anything pasted as a
   // trial reel taken out of it. Trial reels are normally absent from the list
   // anyway; when one is not, counting it on both sides would quietly drag the
   // comparison toward zero.
-  const organic: OrganicReelRow[] = stubs
-    .filter((s) => !trialCodes.has(s.shortcode))
-    .sort((a, b) => newestFirst(a.shortcode, b.shortcode))
-    .slice(0, ORGANIC_WINDOW)
-    .map((s) => ({ shortcode: s.shortcode, views: s.viewCount }));
+  const organic: OrganicReelRow[] = base.reels
+    .filter((r) => !trialCodes.has(r.shortcode))
+    .slice(0, ORGANIC_WINDOW);
 
   const rows: TrialReelRow[] = reels.map((m) => ({
     shortcode: m.job.shortcode,
@@ -545,5 +617,7 @@ async function buildRow(
     note,
     reels: rows,
     organic,
+    baselineAt: base.at,
+    baselineReused: base.reused,
   };
 }

@@ -30,6 +30,7 @@ import {
 import { useRowSelection } from "@/lib/use-row-selection";
 import { formatNumber } from "@/lib/utils";
 import {
+  ORGANIC_TTL_MS,
   ORGANIC_WINDOW,
   TRIAL_BUCKET_LABEL,
   TRIAL_BUCKET_ORDER,
@@ -60,6 +61,8 @@ interface TrialCompareResult {
   note?: string;
   reels: TrialReelRow[];
   organic: OrganicReelRow[];
+  baselineAt: number | null;
+  baselineReused: boolean;
 }
 
 interface Progress {
@@ -109,6 +112,15 @@ const BUCKET_META: Record<
   },
 };
 
+/** How long ago, in the roughest unit that still means something. */
+function ago(at: number): string {
+  const mins = Math.round((Date.now() - at) / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  if (mins < 60 * 48) return `${Math.round(mins / 60)}h ago`;
+  return `${Math.round(mins / 1440)}d ago`;
+}
+
 function signed(pct: number): string {
   return `${pct > 0 ? "+" : ""}${pct}%`;
 }
@@ -123,6 +135,9 @@ export function IgTrialComparePage() {
   const [copied, setCopied] = useState<"names" | "links" | null>(null);
   const [skipped, setSkipped] = useState<string[]>([]);
   const [startError, setStartError] = useState<string | null>(null);
+  // Off by default: reusing a baseline bought in the last day is almost always
+  // what is wanted, and the rows say when they did it.
+  const [fresh, setFresh] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const pollProgress = useCallback(async () => {
@@ -226,7 +241,7 @@ export function IgTrialComparePage() {
     const res = await fetch("/api/ig-trial-compare", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reelLines: lines }),
+      body: JSON.stringify({ reelLines: lines, fresh }),
     });
     const answer = (await res.json().catch(() => null)) as
       | { error?: string; skippedLines?: string[] }
@@ -322,6 +337,26 @@ export function IgTrialComparePage() {
               Clear Results
             </Button>
           )}
+          <label
+            className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground"
+            title={
+              "Off: an account's reel list is reused if it was fetched in the " +
+              "last " +
+              Math.round(ORGANIC_TTL_MS / 3_600_000) +
+              " hours, by this screen or by the Views Checker. On: every " +
+              "baseline is fetched again, at one call per account."
+            }
+          >
+            <input
+              type="checkbox"
+              checked={fresh}
+              disabled={progress?.running}
+              onChange={(e) => setFresh(e.target.checked)}
+              className="size-3.5 cursor-pointer"
+            />
+            Fetch fresh baselines (ignore the last{" "}
+            {Math.round(ORGANIC_TTL_MS / 3_600_000)}h)
+          </label>
           <span className="text-xs text-muted-foreground ml-auto">
             {lineCount ? `${lineCount} lines` : ""}
           </span>
@@ -602,6 +637,11 @@ export function IgTrialComparePage() {
                             {r.trialCount} trial reel
                             {r.trialCount === 1 ? "" : "s"} vs {r.organicCount}{" "}
                             organic
+                            {r.baselineAt
+                              ? r.baselineReused
+                                ? ` · baseline reused from ${ago(r.baselineAt)}`
+                                : " · baseline fetched now"
+                              : ""}
                             {r.note ? ` — ${r.note}` : ""}
                           </div>
                         </TableCell>
@@ -704,6 +744,11 @@ export function IgTrialComparePage() {
           </div>
 
           <p className="text-xs text-muted-foreground">
+            An account&apos;s reel list is shared with the Views Checker: if
+            either screen fetched it in the last{" "}
+            {Math.round(ORGANIC_TTL_MS / 3_600_000)} hours, the baseline is
+            taken from that instead of buying the same call again, and the row
+            says so. Tick the box above the box to force fresh ones.{" "}
             A verdict is only a colour: anything within ±{TRIAL_SAME_BAND}% is
             called the same, because view counts on one account swing about that
             much between two ordinary posts. The exact percentage is in the

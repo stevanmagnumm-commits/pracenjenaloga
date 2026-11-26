@@ -20,7 +20,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { reelLines } = (await request.json()) as { reelLines?: string[] };
+  const { reelLines, fresh } = (await request.json()) as {
+    reelLines?: string[];
+    /** Ignore the saved reel lists and fetch every baseline again. */
+    fresh?: boolean;
+  };
   if (!reelLines?.length) {
     return NextResponse.json({ error: "Reel URLs required" }, { status: 400 });
   }
@@ -38,7 +42,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Fire and forget — the UI polls GET, the same way every other checker works.
-  runTrialCompare(jobs);
+  runTrialCompare(jobs, Boolean(fresh));
 
   return NextResponse.json({
     message: `Started on ${jobs.length} trial reel${jobs.length === 1 ? "" : "s"}`,

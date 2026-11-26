@@ -533,11 +533,16 @@ export function IgViewsCheckerPage() {
 
       {reelRows && progress?.perReel && (
         <p className="text-xs text-muted-foreground">
-          Per-reel lookups left this month:{" "}
+          {/* Used first and in bold, because that is the number people read.
+              The old sentence led with "left" in bold, and 74,798 of 75,000
+              was read as a plan almost spent when it was 0.27% used. */}
+          Per-reel plan this month:{" "}
           <span className="font-medium text-foreground">
-            {progress.perReel.remaining.toLocaleString("en-US")}
+            {(progress.perReel.limit - progress.perReel.remaining).toLocaleString("en-US")}{" "}
+            used
           </span>{" "}
-          of {progress.perReel.limit.toLocaleString("en-US")} — spent only on
+          · {progress.perReel.remaining.toLocaleString("en-US")} left of{" "}
+          {progress.perReel.limit.toLocaleString("en-US")} — spent only on
           reels the account&apos;s own list does not carry.
         </p>
       )}

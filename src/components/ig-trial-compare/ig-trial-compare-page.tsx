@@ -393,11 +393,16 @@ export function IgTrialComparePage() {
 
       {progress?.perReel && (
         <p className="text-xs text-muted-foreground">
-          Per-reel lookups left this month:{" "}
+          {/* Used first and in bold, because that is the number people read.
+              The old sentence led with "left" in bold, and 74,798 of 75,000
+              was read as a plan almost spent when it was 0.27% used. */}
+          Per-reel plan this month:{" "}
           <span className="font-medium text-foreground">
-            {progress.perReel.remaining.toLocaleString("en-US")}
+            {(progress.perReel.limit - progress.perReel.remaining).toLocaleString("en-US")}{" "}
+            used
           </span>{" "}
-          of {progress.perReel.limit.toLocaleString("en-US")} — one per trial
+          · {progress.perReel.remaining.toLocaleString("en-US")} left of{" "}
+          {progress.perReel.limit.toLocaleString("en-US")} — one per trial
           reel, since a trial reel is not on the profile and only this plan can
           read it. The organic baseline comes off the other plan and costs one
           call per account however many of its reels you paste.

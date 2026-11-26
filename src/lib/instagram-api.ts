@@ -1065,7 +1065,18 @@ export async function fetchOwnerReelIndex(
 export type ReelProbe =
   | { state: "ok"; views: number; username: string | null; postedAt: Date | null }
   | { state: "missing"; reason: string }
-  | { state: "inconclusive"; reason: string };
+  | {
+      state: "inconclusive";
+      reason: string;
+      /**
+       * True when the provider itself is failing - server errors or no answer
+       * at all - rather than answering something unhelpful about this reel.
+       * A run uses it to tell "this reel is awkward" from "the service is
+       * down", which deserve opposite reactions: the first is worth moving
+       * past, the second is worth stopping for.
+       */
+      down?: boolean;
+    };
 
 /* -------------------------------------------------------------------------- *
  * A second provider, for one named reel.
@@ -1115,6 +1126,18 @@ const LOOTER_CONCURRENCY = Math.max(1, Number(process.env.IG_LOOTER_CONCURRENCY)
 // reel that really is gone costs four calls out of 75,000 a month.
 const LOOTER_RETRIES = 3;
 
+// Attempts a reel gets while the provider is FAILING, as opposed to answering.
+//
+// Two, not four. The four above exist for one reason - an absence is only
+// believed when every attempt says it - and that reason does not apply to a
+// server error or a hung request, which say nothing about the reel at all.
+// Measured 2026-11-26: looter2 answered HTTP 500 "Internal Error" after 38-46s
+// on every reel tried, including one it had read fine two days earlier. At
+// four attempts of a 25s timeout plus backoff, each reel held a worker for
+// about 110s and a 53-reel paste was on course for sixteen minutes of nothing.
+// Two still forgives a single bad moment, which is all a retry is for.
+const LOOTER_DOWN_ATTEMPTS = 2;
+
 /** Said in a thrown or returned reason when the per-reel plan is spent. */
 export const PER_REEL_QUOTA_GONE = "PER_REEL_QUOTA_GONE";
 
@@ -1153,7 +1176,12 @@ function releaseLooterSlot(): void {
 
 type LooterOutcome =
   | { ok: true; data: Record<string, unknown> }
-  | { ok: false; reason: string };
+  /**
+   * `down` when the service failed - a 5xx, a timeout, a dropped connection -
+   * and false when it answered with something we could not use. A 4xx is an
+   * answer (a quota, a bad request), not an outage.
+   */
+  | { ok: false; reason: string; down: boolean };
 
 async function looterGet(url: string): Promise<LooterOutcome> {
   await looterSlot();
@@ -1174,20 +1202,31 @@ async function looterGet(url: string): Promise<LooterOutcome> {
 
     const text = await response.text();
     if (!response.ok) {
-      return { ok: false, reason: `HTTP ${response.status} ${text.slice(0, 120)}`.trim() };
+      return {
+        ok: false,
+        reason: `HTTP ${response.status} ${text.slice(0, 120)}`.trim(),
+        down: response.status >= 500,
+      };
     }
     let data: unknown;
     try {
       data = JSON.parse(text);
     } catch {
-      return { ok: false, reason: `unparseable body: ${text.slice(0, 100)}` };
+      return { ok: false, reason: `unparseable body: ${text.slice(0, 100)}`, down: false };
     }
     if (!data || typeof data !== "object" || Array.isArray(data)) {
-      return { ok: false, reason: `unexpected body: ${text.slice(0, 100)}` };
+      return { ok: false, reason: `unexpected body: ${text.slice(0, 100)}`, down: false };
     }
     return { ok: true, data: data as Record<string, unknown> };
   } catch (err) {
-    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    // A timeout or a connection that never completed. Either way the service
+    // did not answer, which is the definition of down for our purposes.
+    const said = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      reason: /timeout|aborted/i.test(said) ? `no answer within ${LOOTER_TIMEOUT_MS / 1000}s` : said,
+      down: true,
+    };
   } finally {
     releaseLooterSlot();
   }
@@ -1214,6 +1253,8 @@ export async function probeReelViews(shortcode: string): Promise<ReelProbe> {
   // when those two are equal has the absence actually been confirmed.
   let absences = 0;
   let attempts = 0;
+  // Attempts on which the service failed rather than answered.
+  let downs = 0;
 
   for (let attempt = 0; attempt <= LOOTER_RETRIES; attempt++) {
     if (attempt > 0) await new Promise((r) => setTimeout(r, 1_500 * attempt));
@@ -1228,6 +1269,18 @@ export async function probeReelViews(shortcode: string): Promise<ReelProbe> {
         };
       }
       last = out.reason;
+      if (out.down) {
+        downs++;
+        // Nothing but failures so far: the service is down, not the reel
+        // being difficult, and two attempts is all that deserves.
+        if (downs >= LOOTER_DOWN_ATTEMPTS && downs === attempts) {
+          return {
+            state: "inconclusive",
+            reason: `the per-reel provider is not working right now (${last.slice(0, 100)})`,
+            down: true,
+          };
+        }
+      }
       continue;
     }
 

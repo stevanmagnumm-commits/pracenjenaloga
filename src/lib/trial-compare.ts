@@ -168,6 +168,40 @@ let progress: TrialCompareProgress = freshProgress(0, false);
 let runToken = 0;
 let quotaAbort: string | null = null;
 
+/**
+ * Why the run stopped asking the PER-REEL provider, when it did.
+ *
+ * Kept apart from quotaAbort on purpose. quotaAbort means the run cannot go on
+ * at all - the user pressed stop, or the main plan is walled - and the second
+ * pass would fail the same way. This one means only that the reel lookups are
+ * over: the reels already read still have a perfectly good baseline waiting on
+ * the other plan, and throwing them away because a different provider fell
+ * over would be discarding finished work to make a point.
+ */
+let perReelStop: string | null = null;
+
+/** Reels in a row whose lookup came back as the provider failing. Any reel
+ *  the provider answered - with a number or with a real "not there" - resets it. */
+let downStreak = 0;
+
+/**
+ * How many reels in a row may find the provider down before the run stops
+ * asking it.
+ *
+ * Six, which is one full round of workers. It stops the run within about TWO
+ * rounds, not one, and that is worth being exact about: with a dead provider
+ * all six workers come back down at nearly the same moment, the first five to
+ * land each pick up a fresh reel before the sixth trips the breaker, and those
+ * five run their course. The offline test sees 11 of 12 reels asked for that
+ * reason. At the live 25s timeout that is about a hundred seconds - against
+ * the sixteen minutes a 53-reel paste was on course for on 2026-11-26, when
+ * looter2 answered HTTP 500 to everything and had read 6 reels in five.
+ *
+ * A healthy provider that drops one request resets the count with the very
+ * next answer, so this does not trip on a hiccup.
+ */
+const PROVIDER_DOWN_STREAK = 6;
+
 export function getTrialCompareProgress(): TrialCompareProgress {
   return progress;
 }
@@ -206,13 +240,30 @@ function noteIfQuotaDead(err: unknown): void {
 /** A spent per-reel plan is not a hiccup: grinding on would write a wall of
  *  identical failures and the plan is gone either way. */
 function noteIfPerReelSpent(probe: ReelProbe): void {
-  if (quotaAbort) return;
+  if (perReelStop) return;
   if (probe.state !== "inconclusive") return;
   if (!probe.reason.includes(PER_REEL_QUOTA_GONE)) return;
-  quotaAbort =
-    "The per-reel API plan is spent - run stopped. Rows already finished are " +
-    "valid; the rest are simply unchecked.";
-  console.error("[trial-compare] ABORT: " + quotaAbort);
+  perReelStop = "The per-reel API plan is spent, so the run stopped looking reels up.";
+  console.error("[trial-compare] PER-REEL STOP: " + perReelStop);
+}
+
+/** Count the provider failing; stop asking it once it has done so for a whole
+ *  round of workers without a single real answer in between. */
+function notePerReelHealth(probe: ReelProbe): void {
+  if (probe.state === "inconclusive" && probe.down) {
+    downStreak++;
+    if (downStreak >= PROVIDER_DOWN_STREAK && !perReelStop) {
+      perReelStop =
+        `The per-reel provider (Instagram Looter) is not working right now - ` +
+        `${downStreak} reels in a row came back with server errors or no answer ` +
+        `at all, so the run stopped asking it.`;
+      console.error("[trial-compare] PER-REEL STOP: " + perReelStop);
+    }
+    return;
+  }
+  // A number, or a real "this post does not exist": either way the service
+  // answered, which is all the streak is about.
+  if (probe.state === "ok" || probe.state === "missing") downStreak = 0;
 }
 
 async function withDeadline<T>(
@@ -295,9 +346,14 @@ async function trialRun(jobs: ReelViewsJob[], fresh: boolean): Promise<void> {
 
   const myToken = ++runToken;
   quotaAbort = null;
+  perReelStop = null;
+  downStreak = 0;
   clearApiWall();
   progress = freshProgress(jobs.length, true);
   const isActive = () => progress.running && runToken === myToken && !wallHit();
+  // Pass 1 also stops when the per-reel provider is gone; pass 2 does not care,
+  // it never calls that provider.
+  const isReading = () => isActive() && !perReelStop;
 
   // One lookup per account however many times it is asked for, shared between
   // workers as a promise rather than a result - two reels of the same account
@@ -326,7 +382,7 @@ async function trialRun(jobs: ReelViewsJob[], fresh: boolean): Promise<void> {
      * ------------------------------------------------------------------ */
     const measured: Measured[] = [];
 
-    await pool(jobs, laneWorkers("views", CONCURRENCY), isActive, async (job) => {
+    await pool(jobs, laneWorkers("views", CONCURRENCY), isReading, async (job) => {
       progress.current = job.label || job.shortcode;
 
       if (job.label) {
@@ -355,6 +411,7 @@ async function trialRun(jobs: ReelViewsJob[], fresh: boolean): Promise<void> {
         reason: `no answer within ${DEADLINE / 1000}s`,
       }));
       noteIfPerReelSpent(probe);
+      notePerReelHealth(probe);
 
       if (probe.state === "ok") {
         const owner = probe.username || job.label || null;
@@ -466,7 +523,23 @@ async function trialRun(jobs: ReelViewsJob[], fresh: boolean): Promise<void> {
       progress.current = null;
       progress.running = false;
       progress.phase = "done";
-      progress.abortedReason = quotaAbort;
+      // The per-reel stop is reported with the arithmetic that makes it
+      // actionable: what was read, and what was never asked - so "try again
+      // later" can be acted on with exactly the lines that need it.
+      const notTried = progress.total - progress.resolved;
+      progress.abortedReason =
+        quotaAbort ??
+        (perReelStop
+          ? (
+              `${perReelStop} ${progress.resolved} of ${progress.total} reels were ` +
+              `looked up before that; the rows below are complete for those.` +
+              (notTried === 1
+                ? " The other one was not tried at all - paste it again later."
+                : notTried > 1
+                  ? ` The other ${notTried} were not tried at all - paste them again later.`
+                  : "")
+            )
+          : null);
       const c = progress.counts;
       console.log(
         `[trial-compare] Done. worse: ${c.worse}, same: ${c.same}, ` +

@@ -23,6 +23,7 @@ import {
 } from "./view-buckets";
 import { runInLane, laneWorkers } from "./api-lanes";
 import { rememberOrganic } from "./organic-cache";
+import { archiveViewsRun } from "./views-run-archive";
 
 import {
   saveJson,
@@ -716,6 +717,7 @@ async function reelBatchWork(
   if (!jobs.length) return;
 
   const myToken = ++runToken;
+  const startedAt = Date.now();
   quotaAbort = null;
   clearApiWall();
   const isActive = () => progress.running && runToken === myToken && !wallHit();
@@ -782,6 +784,16 @@ async function reelBatchWork(
         `[ig-views-check] Reels done. <100: ${c.under100}, 100-200: ${c.mid}, 200+: ${c.over200}, ` +
           `unread: ${c.failed}`,
       );
+
+      // The results live in memory and the next run replaces them, so the
+      // finished run goes to disk as an Excel file before anyone can.
+      await archiveViewsRun(progress.results, {
+        mode: "reels",
+        startedAt,
+        total: progress.total,
+        completed: progress.completed,
+        abortedReason: progress.abortedReason,
+      });
     }
   }
 }
@@ -930,6 +942,7 @@ async function gradeBatchWork(
   already: ViewsCheckResult[],
 ): Promise<void> {
   const myToken = ++runToken;
+  const startedAt = Date.now();
   quotaAbort = null;
   clearApiWall();
   const isActive = () => progress.running && runToken === myToken && !wallHit();
@@ -1010,6 +1023,16 @@ async function gradeBatchWork(
         `[ig-views-check] Done. <100: ${c.under100}, 100-200: ${c.mid}, 200+: ${c.over200}, ` +
           `banned: ${c.banned}, no posts: ${c.noposts}, no reels: ${c.noreels}, failed: ${c.failed}`,
       );
+
+      // The results live in memory and the next run replaces them, so the
+      // finished run goes to disk as an Excel file before anyone can.
+      await archiveViewsRun(progress.results, {
+        mode: "accounts",
+        startedAt,
+        total: progress.total,
+        completed: progress.completed,
+        abortedReason: progress.abortedReason,
+      });
     }
   }
 }

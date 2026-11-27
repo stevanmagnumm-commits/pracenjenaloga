@@ -21,6 +21,7 @@ import {
   Square,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { SavedRuns } from "./saved-runs";
 import { useRowSelection, openInstagramTabs } from "@/lib/use-row-selection";
 import {
   Table,
@@ -840,6 +841,8 @@ export function IgViewsCheckerPage() {
           </div>
         </div>
       )}
+
+      <SavedRuns running={Boolean(progress?.running)} />
     </div>
   );
 }

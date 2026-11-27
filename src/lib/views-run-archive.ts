@@ -20,8 +20,8 @@ import type { ViewsCheckResult } from "./ig-views-check";
 
 const DIR = () => path.join(stateDir(), "views-runs");
 
-/** Runs kept. A big run is a few hundred KB, so this is well under 100 MB. */
-const KEEP = 200;
+/** Runs kept. A 5,822-account run is about 1 MB compressed (2.5 MB without), so 100 stay near 100 MB. */
+const KEEP = 100;
 
 /** What a file name may look like - also the guard on the download route. */
 export const RUN_FILE_RE = /^views-check_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_[a-z]+_\d+(_prekinut)?\.xlsx$/;
@@ -147,7 +147,7 @@ export async function archiveViewsRun(rows: ViewsCheckResult[], meta: RunMeta): 
     const file =
       `views-check_${p.year}-${p.month}-${p.day}_${p.hour}-${p.minute}-${p.second}_` +
       `${meta.mode === "reels" ? "reels" : "nalozi"}_${rows.length}${stopped}.xlsx`;
-    const buf = XLSX.write(buildRunWorkbook(rows, meta, finishedAt), { type: "buffer", bookType: "xlsx" }) as Buffer;
+    const buf = XLSX.write(buildRunWorkbook(rows, meta, finishedAt), { type: "buffer", bookType: "xlsx", compression: true }) as Buffer;
     await fs.mkdir(DIR(), { recursive: true });
     const tmp = path.join(DIR(), file + ".tmp");
     await fs.writeFile(tmp, buf);
